@@ -1,6 +1,6 @@
 # Duix Mobile for Android SDK 文档
 
-简体中文 | [English](./README.md)
+中文 | [English](./README.md)
 
 ## 一、产品介绍
 

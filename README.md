@@ -1,4 +1,4 @@
-English | [简体中文](/README_zh.md) 
+English | [中文](/README_zh.md) 
 
 # 🚀🚀🚀 Duix Mobile — The Best Real-time Interactive AI Avatar Solution for Mobile Devices
 
@@ -72,37 +72,44 @@ View more AI avatars online：[www.duix.com](http://www.duix.com)
 
 ## 🙌 Frequently Asked Questions
 
-- Can I integrate my own Large Language Model (LLM), Speech Recognition (ASR), and Text-to-Speech (TTS)?
-    
-    Yes, Duix Mobile supports full integration with custom or third-party LLM, ASR, and TTS services.
-    
-- Does it support "lip synchronization"?
-    
-    Yes, it does.
-    
-- Does it support "multilingual subtitles"?
-    
-    Yes, it does.
-    
-- How can I create custom AI avatars?
-    
-    We offer 4 public avatar models. For custom avatars, please contact us via the email address above.
-    
-    Usually, providing a 15-second to 2-minute video is typically sufficient for customization.
-    
-- Is streaming audio supported?
-    
-    Yes, streaming audio with barge-in support is available from the July 17, 2025 release.
-    
-- Are voice start/end callbacks available?
-    
-    Yes, callback events for voice start and end are fully documented.
-    
+<details>
+<summary>Can I integrate my own Large Language Model (LLM), Speech-to-Text(ASR), and Text-to-Speech (TTS)?</summary>
 
-## 💡 Version Roadmap
+Yes, Duix Mobile supports full integration with custom or third-party LLM, ASR, and TTS services.
 
-- [x]  Streaming audio capability, launched on July 16, 2025
-- [x]  Algorithm response optimization, expected by August 30, 2025
+</details>
+<details>
+<summary>Does it support "lip synchronization"?</summary>
+
+Yes, it does.
+
+</details>
+    
+<details>
+<summary>Does it support "multilingual subtitles"?</summary>
+
+Yes, it does.
+
+</details>
+<details>
+<summary>How can I create custom AI avatars?</summary>
+
+We offer 4 public avatar models. For custom avatars, please contact us via the email address above.
+
+Usually, providing a 15-second to 2-minute video is typically sufficient for customization.
+</details>
+<details>
+<summary>Is streaming audio supported?</summary>
+
+Yes, streaming audio with barge-in support is available from the July 17, 2025 release.
+</details>
+    
+<details>
+<summary>Are voice start/end callbacks available?</summary>
+
+Yes, callback events for voice start and end are fully documented.
+
+</details>
 
 ## ❇️ Other projects by Duix
 

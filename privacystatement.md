@@ -1,4 +1,4 @@
-# Duix SDK PrivaDcy Statement  
+# Duix SDK Privacy Statement
 
 **Last Updated:** 2025/06/09  
 **SDK Name:** Duix Real-time Interaction SDK  
@@ -91,6 +91,6 @@ Users may:
 For privacy inquiries:  
 - **Developers:** Open issues in our GitHub Repository：[https://github.com/duixcom].  
 - **End-Users:** Contact the Customer App’s support team.  
-- **Legal Requests:** james@duix.com
+- **Legal Requests:** support@duix.com
 
-**DPO Contact:** james@duix.com 
+**DPO Contact:** support@duix.com 
