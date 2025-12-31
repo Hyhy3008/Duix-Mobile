@@ -6,7 +6,7 @@ English | [中文](/README_zh.md)
 
 **📱 Cross-platform support: iOS / Android / Tablet / Automotive / VR / IoT / Large Screen Interaction, etc.**
 
-https://github.com/GuijiAI/duix.ai/releases/download/v2.0.1/demo.mp4
+https://github.com/user-attachments/assets/6cfb59fc-d4bb-4c9f-8a2b-54009ce594a1
 
 ## 😎 What is Duix Mobile?
 
