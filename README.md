@@ -6,7 +6,7 @@ English | [中文](/README_zh.md)
 
 **📱 Cross-platform support: iOS / Android / Tablet / Automotive / VR / IoT / Large Screen Interaction, etc.**
 
-https://release-assets.githubusercontent.com/github-production-release-asset/801459371/0e5066f2-791a-4a59-b24b-a085b4214e5b?sp=r&sv=2018-11-09&sr=b&spr=https&se=2025-12-31T07%3A01%3A32Z&rscd=attachment%3B+filename%3Ddemo.mp4&rsct=application%2Foctet-stream&skoid=96c2d410-5711-43a1-aedd-ab1947aa7ab0&sktid=398a6654-997b-47e9-b12b-9515b896b4de&skt=2025-12-31T06%3A01%3A17Z&ske=2025-12-31T07%3A01%3A32Z&sks=b&skv=2018-11-09&sig=q5f8dKzezyYfcUjNY7KgHq23ftCR2plraU%2BFrBUCIcs%3D&jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmVsZWFzZS1hc3NldHMuZ2l0aHVidXNlcmNvbnRlbnQuY29tIiwia2V5Ijoia2V5MSIsImV4cCI6MTc2NzE2Mzc1OSwibmJmIjoxNzY3MTYxOTU5LCJwYXRoIjoicmVsZWFzZWFzc2V0cHJvZHVjdGlvbi5ibG9iLmNvcmUud2luZG93cy5uZXQifQ.cY1xNtucyPgsKOxKfwwwGok7zEjpBPFk2J_g58NGilA&response-content-disposition=attachment%3B%20filename%3Ddemo.mp4&response-content-type=application%2Foctet-stream
+https://github.com/user-attachments/assets/6cfb59fc-d4bb-4c9f-8a2b-54009ce594a1
 
 ## 😎 What is Duix Mobile?
 
