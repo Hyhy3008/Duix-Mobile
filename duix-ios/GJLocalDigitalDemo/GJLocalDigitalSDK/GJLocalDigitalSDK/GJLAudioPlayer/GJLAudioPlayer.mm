@@ -19,7 +19,7 @@
 //@property (nonatomic, strong) NSMutableData *pcmDataCache2; // 解码数据缓冲区。
 @property (nonatomic, strong) GJLKFAudioConfig *audioConfig;
 //@property (nonatomic, strong) GJLKFAudioRender *audioRender;
-//@property (nonatomic, strong) dispatch_semaphore_t semaphore;
+@property (nonatomic, strong) dispatch_semaphore_t semaphore;
 @property (nonatomic, strong) GJLKFAudioCapture *audioCapture;
 @property (nonatomic, assign)NSInteger all_pcm_lenth;
 @property (nonatomic, strong)NSLock * pcmLock;
@@ -41,7 +41,7 @@ static GJLAudioPlayer * manager = nil;
     if(self)
     {
         self.pcmLock=[[NSLock alloc] init];
-//        _semaphore = dispatch_semaphore_create(1);
+        _semaphore = dispatch_semaphore_create(1);
         _pcmDataCache = [[NSMutableData alloc] init];
 //        _pcmDataCache2 = [[NSMutableData alloc] init];
  
@@ -112,9 +112,9 @@ static GJLAudioPlayer * manager = nil;
         };
         
         _audioCapture.audioBufferInputCallBack = ^(AudioBufferList * _Nonnull audioBufferList) {
-           
+            dispatch_semaphore_wait(weakSelf.semaphore, DISPATCH_TIME_FOREVER);
             if (weakSelf.pcmDataCache.length < audioBufferList->mBuffers[0].mDataByteSize || weakSelf.isPlaying==NO || [DigitalHumanDriven manager].isAudioReady==0 || [GJLAudioPlayer manager].isMute==YES) {
-                  //   dispatch_semaphore_wait(weakSelf.semaphore, DISPATCH_TIME_FOREVER);
+               
                      for (UInt32 i=0; i < audioBufferList->mNumberBuffers; i++)
                      {
                          if (audioBufferList->mBuffers[i].mData != NULL) {
@@ -122,7 +122,7 @@ static GJLAudioPlayer * manager = nil;
                          }
                      }
         
-//                     dispatch_semaphore_signal(weakSelf.semaphore);
+//
                      
 
                      
@@ -146,7 +146,7 @@ static GJLAudioPlayer * manager = nil;
 //                         dispatch_semaphore_signal(weakSelf.semaphore);
                      }
               [GJLDigitalManager manager].dataLength=weakSelf.pcmDataCache.length;
-     
+               dispatch_semaphore_signal(weakSelf.semaphore);
              };
     
         _audioCapture.sampleBufferOutputCallBack = ^(CMSampleBufferRef  _Nonnull sample, NSInteger type) {
@@ -330,6 +330,7 @@ std::vector<int16_t> resample_pcm(const std::vector<int16_t>& input, size_t new_
     {
         return;
     }
+    [self.pcmLock lock];
     int dataLength =(int) [audioData length];
     
     // 动态分配uint8_t数组
@@ -339,13 +340,17 @@ std::vector<int16_t> resample_pcm(const std::vector<int16_t>& input, size_t new_
     [audioData getBytes:byteArray range:NSMakeRange(0, dataLength)];
         //推流pcm
     [[DigitalHumanDriven manager] wavPCM:byteArray size:dataLength];
+    dispatch_semaphore_wait(self.semaphore, DISPATCH_TIME_FOREVER);
     [self.pcmDataCache appendData:audioData];
     self.all_pcm_lenth=self.all_pcm_lenth+dataLength;
    
     [self toBufferLength:(int)self.all_pcm_lenth isFinish:YES];
+    
+    dispatch_semaphore_signal(self.semaphore);
     audioData=nil;
     free(byteArray); // 释放内存
     byteArray = NULL; // 避免悬垂指针
+    [self.pcmLock unlock];
    
 }
 -(void)wavPCM:(uint8_t*)pcm size:(int)size
@@ -358,15 +363,19 @@ std::vector<int16_t> resample_pcm(const std::vector<int16_t>& input, size_t new_
     {
         return;
     }
+         [self.pcmLock lock];
 //        dispatch_semaphore_wait(self.semaphore, DISPATCH_TIME_FOREVER);
          [[DigitalHumanDriven manager] wavPCM:pcm size:size];
          NSData *data = [NSData dataWithBytes:pcm length:size];
+         dispatch_semaphore_wait(self.semaphore, DISPATCH_TIME_FOREVER);
          [self.pcmDataCache appendData:data];
          self.all_pcm_lenth=self.all_pcm_lenth+size;
         
          [self toBufferLength:(int)self.all_pcm_lenth isFinish:YES];
+          dispatch_semaphore_signal(self.semaphore);
          data=nil;
-//         dispatch_semaphore_signal(self.semaphore);
+         [self.pcmLock unlock];
+
 
    
     
@@ -376,7 +385,9 @@ std::vector<int16_t> resample_pcm(const std::vector<int16_t>& input, size_t new_
 {
     self.isPlaying=NO;
     self.isPlayMutePcm=NO;
+    dispatch_semaphore_wait(self.semaphore, DISPATCH_TIME_FOREVER);
     _pcmDataCache = [[NSMutableData alloc] init];
+    dispatch_semaphore_signal(self.semaphore);
     [self.audioCapture stopRunning];
 }
 /*
@@ -390,6 +401,7 @@ std::vector<int16_t> resample_pcm(const std::vector<int16_t>& input, size_t new_
 -(void)clearAudioBuffer
 {
 
+    dispatch_semaphore_wait(self.semaphore, DISPATCH_TIME_FOREVER);
     self.isBreak=YES;
    if(self.pcmDataCache.length>0)
    {
@@ -399,6 +411,7 @@ std::vector<int16_t> resample_pcm(const std::vector<int16_t>& input, size_t new_
     self.all_pcm_lenth=0;
     self.audioCapture.readedSize=0;
     self.audioCapture.dataLengh=0;
+     dispatch_semaphore_signal(self.semaphore);
     [self.audioCapture resetAudioUnit];
 
 
