@@ -9,16 +9,20 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 
-class LlmClient(
-    private val apiKey: String,
-    private val model: String,
-) {
+class LlmClient {
+
+    companion object {
+        private const val API_KEY = "csk-dwtjyxt4yrvdxf2d28fk3x8whdkdtf526njm925enm3pt32w"
+        private const val ENDPOINT = "https://api.cerebras.ai/v1/chat/completions"
+        private const val MODEL = "llama-3.3-70b"
+    }
+
     private val http = OkHttpClient()
     private val jsonType = "application/json; charset=utf-8".toMediaType()
 
     suspend fun chat(prompt: String): String = withContext(Dispatchers.IO) {
         val body = JSONObject().apply {
-            put("model", model)
+            put("model", MODEL)
             put("stream", false)
             put(
                 "messages",
@@ -32,15 +36,15 @@ class LlmClient(
         }
 
         val req = Request.Builder()
-            .url("https://api.cerebras.ai/v1/chat/completions")
+            .url(ENDPOINT)
             .addHeader("Content-Type", "application/json")
-            .addHeader("Authorization", "Bearer $apiKey")
+            .addHeader("Authorization", "Bearer $API_KEY")
             .post(body.toString().toRequestBody(jsonType))
             .build()
 
         http.newCall(req).execute().use { resp ->
             val text = resp.body?.string().orEmpty()
-            if (!resp.isSuccessful) error("LLM HTTP ${resp.code}: $text")
+            if (!resp.isSuccessful) error("Cerebras HTTP ${resp.code}: $text")
 
             val json = JSONObject(text)
             json.getJSONArray("choices")
