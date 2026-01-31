@@ -15,26 +15,36 @@ class TtsToPcm(ctx: Context) {
     private val appCtx = ctx.applicationContext
     private val ready = CompletableDeferred<Unit>()
 
-    private val tts: TextToSpeech = TextToSpeech(appCtx) { status ->
-        if (status == TextToSpeech.SUCCESS) {
-            tts.language = Locale("vi", "VN")
-            ready.complete(Unit)
-        } else {
-            ready.completeExceptionally(IllegalStateException("TTS init failed: $status"))
+    // Nullable để tránh lỗi "must be initialized"
+    private var tts: TextToSpeech? = null
+
+    init {
+        // Dùng biến local để callback không chạm vào property chưa gán
+        var engine: TextToSpeech? = null
+        engine = TextToSpeech(appCtx) { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                engine?.language = Locale("vi", "VN")
+                ready.complete(Unit)
+            } else {
+                ready.completeExceptionally(IllegalStateException("TTS init failed: $status"))
+            }
         }
+        tts = engine
     }
 
     /**
-     * Return PCM 16kHz, mono, 16-bit (little endian)
+     * Trả về PCM 16kHz, mono, 16-bit (little endian).
+     * Có pad tối thiểu 1s (32000 bytes) để trigger mouth của DUIX.
      */
     suspend fun synthesizePcm16k(text: String): ByteArray {
         ready.await()
+        val engine = tts ?: error("TTS is null")
 
         val outFile = File(appCtx.cacheDir, "tts_tmp.wav").apply { if (exists()) delete() }
         val uttId = "utt_${System.currentTimeMillis()}"
         val done = CompletableDeferred<Unit>()
 
-        tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+        engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(utteranceId: String) {}
             override fun onDone(utteranceId: String) {
                 if (utteranceId == uttId) done.complete(Unit)
@@ -45,14 +55,14 @@ class TtsToPcm(ctx: Context) {
         })
 
         @Suppress("DEPRECATION")
-        tts.synthesizeToFile(text, null, outFile, uttId)
+        engine.synthesizeToFile(text, null, outFile, uttId)
 
         done.await()
 
         val wav = outFile.readBytes()
         var pcm = WavUtil.toPcm16kMono16(wav)
 
-        // SDK yêu cầu >= 1s (32000 bytes) để trigger mouth
+        // DUIX yêu cầu >= 1s (32000 bytes)
         if (pcm.size < 32000) {
             pcm = pcm + ByteArray(32000 - pcm.size)
         }
@@ -60,12 +70,9 @@ class TtsToPcm(ctx: Context) {
     }
 
     fun release() {
-        try {
-            tts.stop()
-        } catch (_: Exception) {}
-        try {
-            tts.shutdown()
-        } catch (_: Exception) {}
+        tts?.stop()
+        tts?.shutdown()
+        tts = null
     }
 
     private object WavUtil {
@@ -82,12 +89,14 @@ class TtsToPcm(ctx: Context) {
 
             var pcm = info.pcmData
 
-            if (info.channels == 2) {
-                pcm = stereoToMono16(pcm)
-            } else {
-                require(info.channels == 1) { "WAV channels=${info.channels} (need 1 or 2)" }
+            // stereo -> mono
+            pcm = when (info.channels) {
+                1 -> pcm
+                2 -> stereoToMono16(pcm)
+                else -> error("WAV channels=${info.channels} (need 1 or 2)")
             }
 
+            // resample về 16k nếu cần
             if (info.sampleRate != 16000) {
                 pcm = resample16(pcm, info.sampleRate, 16000)
             }
@@ -103,7 +112,6 @@ class TtsToPcm(ctx: Context) {
             var sampleRate = -1
             var channels = -1
             var bitsPerSample = -1
-
             var dataOff = -1
             var dataSize = -1
 
@@ -130,7 +138,6 @@ class TtsToPcm(ctx: Context) {
 
             val end = min(dataOff + dataSize, wav.size)
             val pcm = wav.copyOfRange(dataOff, end)
-
             return WavInfo(sampleRate, channels, bitsPerSample, pcm)
         }
 
@@ -149,6 +156,7 @@ class TtsToPcm(ctx: Context) {
             return out
         }
 
+        // Linear resample 16-bit mono
         private fun resample16(pcm16: ByteArray, fromRate: Int, toRate: Int): ByteArray {
             val inSamples = pcm16.size / 2
             val outSamples = (inSamples.toLong() * toRate / fromRate).toInt()
