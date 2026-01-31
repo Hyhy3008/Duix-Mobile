@@ -4,10 +4,10 @@ import ai.guiji.duix.sdk.client.Constant
 import ai.guiji.duix.sdk.client.DUIX
 import ai.guiji.duix.sdk.client.loader.ModelInfo
 import ai.guiji.duix.sdk.client.render.DUIXRenderer
-import ai.guiji.duix.sdk.client.thread.RenderThread
 import ai.guiji.duix.test.R
 import ai.guiji.duix.test.databinding.ActivityCallBinding
 import ai.guiji.duix.test.llm.LlmClient
+import ai.guiji.duix.test.tts.TtsToPcm
 import ai.guiji.duix.test.ui.adapter.MotionAdapter
 import ai.guiji.duix.test.ui.dialog.AudioRecordDialog
 import ai.guiji.duix.test.util.StringUtils
@@ -24,15 +24,19 @@ import com.bumptech.glide.Glide
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import kotlin.math.min
 
 class CallActivity : BaseActivity() {
 
     companion object {
         const val GL_CONTEXT_VERSION = 2
+        private const val TAG = "CallActivity"
     }
 
     private var modelUrl = ""
@@ -42,10 +46,15 @@ class CallActivity : BaseActivity() {
     private lateinit var binding: ActivityCallBinding
     private var duix: DUIX? = null
     private var mDUIXRender: DUIXRenderer? = null
-    private var mModelInfo: ModelInfo? = null     // 加载的模型信息
+    private var mModelInfo: ModelInfo? = null
 
-    // STEP 3C: LLM client + coroutine scope
+    // LLM (đã hardcode key trong LlmClient.kt theo yêu cầu của bạn)
     private val llmClient = LlmClient()
+
+    // TTS -> PCM
+    private lateinit var ttsToPcm: TtsToPcm
+
+    // coroutine scope
     private val uiScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     @SuppressLint("SetTextI18n")
@@ -53,14 +62,12 @@ class CallActivity : BaseActivity() {
         if (debug) {
             runOnUiThread {
                 binding.tvDebug.visibility = View.VISIBLE
-                if (mMessage.length > 10000) {
-                    mMessage = ""
-                }
+                if (mMessage.length > 10000) mMessage = ""
                 mMessage = "${StringUtils.dateToStringMS4()} $msg\n$mMessage"
                 binding.tvDebug.text = mMessage
             }
         }
-        Log.i("CallActivity", msg)
+        Log.i(TAG, msg)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -69,6 +76,8 @@ class CallActivity : BaseActivity() {
 
         binding = ActivityCallBinding.inflate(layoutInflater)
         setContentView(binding.root)
+
+        ttsToPcm = TtsToPcm(this)
 
         modelUrl = intent.getStringExtra("modelUrl") ?: ""
         debug = intent.getBooleanExtra("debug", false)
@@ -108,12 +117,15 @@ class CallActivity : BaseActivity() {
             duix?.stopAudio()
         }
 
-        // ================== STEP 3C (NEW) ==================
-        // Nhập text -> gọi LLM -> show reply
+        // STEP 4: USER -> LLM -> TTS -> push PCM (nhép miệng + phát)
         binding.btnSendChat.setOnClickListener {
             val prompt = binding.etChat.text?.toString()?.trim().orEmpty()
             if (prompt.isEmpty()) {
                 Toast.makeText(mContext, "Bạn chưa nhập text", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            if (duix?.isReady() != true) {
+                Toast.makeText(mContext, "DUIX chưa sẵn sàng", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
 
@@ -124,25 +136,27 @@ class CallActivity : BaseActivity() {
                 try {
                     val reply = llmClient.chat(prompt)
                     applyMessage("LLM: $reply")
-                    Toast.makeText(mContext, "LLM trả lời xong", Toast.LENGTH_SHORT).show()
+
+                    // stop current audio
+                    duix?.stopAudio()
+
+                    val pcm16k = ttsToPcm.synthesizePcm16k(reply)
+
+                    withContext(Dispatchers.IO) {
+                        pushPcmRealtime(pcm16k)
+                    }
                 } catch (e: Exception) {
-                    applyMessage("LLM ERROR: ${e.message}")
-                    Toast.makeText(mContext, "LLM lỗi: ${e.message}", Toast.LENGTH_SHORT).show()
+                    applyMessage("ERROR: ${e.message}")
+                    Toast.makeText(mContext, "Lỗi: ${e.message}", Toast.LENGTH_SHORT).show()
                 } finally {
                     binding.btnSendChat.isEnabled = true
                 }
             }
         }
-        // ===================================================
 
-        mDUIXRender =
-            DUIXRenderer(
-                mContext,
-                binding.glTextureView
-            )
+        mDUIXRender = DUIXRenderer(mContext, binding.glTextureView)
         binding.glTextureView.setRenderer(mDUIXRender)
-        binding.glTextureView.renderMode =
-            GLSurfaceView.RENDERMODE_WHEN_DIRTY      // 一定要在设置完Render之后再调用
+        binding.glTextureView.renderMode = GLSurfaceView.RENDERMODE_WHEN_DIRTY
 
         duix = DUIX(mContext, modelUrl, mDUIXRender) { event, msg, info ->
             when (event) {
@@ -160,48 +174,34 @@ class CallActivity : BaseActivity() {
                     }
                 }
 
-                Constant.CALLBACK_EVENT_AUDIO_PLAY_START -> {
-                    applyMessage("callback audio play start")
-                    Log.i(TAG, "CALLBACK_EVENT_AUDIO_PLAY_START")
-                }
-
-                Constant.CALLBACK_EVENT_AUDIO_PLAY_END -> {
-                    applyMessage("callback audio play end")
-                    Log.i(TAG, "CALLBACK_EVENT_PLAY_END")
-                }
-
-                Constant.CALLBACK_EVENT_AUDIO_PLAY_ERROR -> {
-                    applyMessage("callback audio play error: $msg")
-                    Log.e(TAG, "CALLBACK_EVENT_PLAY_ERROR: $msg")
-                }
-
-                Constant.CALLBACK_EVENT_MOTION_START -> {
-                    applyMessage("callback motion play start")
-                    Log.e(TAG, "CALLBACK_EVENT_MOTION_START")
-                }
-
-                Constant.CALLBACK_EVENT_MOTION_END -> {
-                    applyMessage("callback motion play end")
-                    Log.e(TAG, "CALLBACK_EVENT_MOTION_END")
-                }
+                Constant.CALLBACK_EVENT_AUDIO_PLAY_START -> applyMessage("callback audio play start")
+                Constant.CALLBACK_EVENT_AUDIO_PLAY_END -> applyMessage("callback audio play end")
+                Constant.CALLBACK_EVENT_AUDIO_PLAY_ERROR -> applyMessage("callback audio play error: $msg")
+                Constant.CALLBACK_EVENT_MOTION_START -> applyMessage("callback motion play start")
+                Constant.CALLBACK_EVENT_MOTION_END -> applyMessage("callback motion play end")
             }
         }
-
-        // Rendering status callback
-//        duix?.setReporter(object : RenderThread.Reporter {
-//            override fun onRenderStat(
-//                resultCode: Int,
-//                isLip: Boolean,
-//                useTime: Long,
-//            ) {}
-//        })
 
         applyMessage("start init")
         duix?.init()
     }
 
+    private fun pushPcmRealtime(pcm: ByteArray) {
+        val duix = duix ?: return
+        val chunk = 320 // 10ms @ 16kHz mono 16-bit => 320 bytes
+
+        duix.startPush()
+        var off = 0
+        while (off < pcm.size) {
+            val end = min(off + chunk, pcm.size)
+            duix.pushPcm(pcm.copyOfRange(off, end))
+            off = end
+            Thread.sleep(10)
+        }
+        duix.stopPush()
+    }
+
     private fun initOk() {
-        Log.i(TAG, "init ok")
         applyMessage("init ok")
         runOnUiThread {
             binding.btnRecord.isEnabled = true
@@ -218,11 +218,10 @@ class CallActivity : BaseActivity() {
                             names.add(motion.name)
                         }
                     }
-                    // Named action regions
                     if (names.isNotEmpty()) {
                         val motionAdapter = MotionAdapter(names, object : MotionAdapter.Callback {
                             override fun onClick(name: String, now: Boolean) {
-                                applyMessage("start [${name}] motion")
+                                applyMessage("start [$name] motion")
                                 duix?.startMotion(name, now)
                             }
                         })
@@ -237,7 +236,10 @@ class CallActivity : BaseActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        uiScope.coroutineContext.cancel()
+        uiScope.cancel()
+        try {
+            ttsToPcm.release()
+        } catch (_: Exception) {}
         duix?.release()
     }
 
@@ -262,7 +264,6 @@ class CallActivity : BaseActivity() {
             val wavName = "1.wav"
             val wavFile = File(mContext.externalCacheDir, wavName)
             if (!wavFile.exists()) {
-                // copy assets -> sd card
                 val inputStream = assets.open("wav/$wavName")
                 if (!mContext.externalCacheDir!!.exists()) {
                     mContext.externalCacheDir!!.mkdirs()
