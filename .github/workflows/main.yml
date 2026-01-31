@@ -1,4 +1,4 @@
-name: Build Debug APK (Fail Fast)
+name: Build Debug APK (Fail Fast + Show Kotlin Errors)
 
 on:
   push:
@@ -50,7 +50,7 @@ jobs:
           yes | sdkmanager --licenses >/dev/null
           set -o pipefail
 
-      - name: Bootstrap Gradle command
+      - name: Bootstrap Gradle command (use gradlew if exists, else download distribution)
         id: gradle
         shell: bash
         run: |
@@ -62,29 +62,38 @@ jobs:
           fi
 
           PROP="${GRADLE_ROOT}/gradle/wrapper/gradle-wrapper.properties"
+          if [ ! -f "$PROP" ]; then
+            echo "::error::No gradlew and no $PROP"
+            exit 1
+          fi
+
           URL=$(grep -E '^distributionUrl=' "$PROP" | cut -d= -f2- | sed 's/\\:/:/g')
+          if [ -z "$URL" ]; then
+            echo "::error::Cannot read distributionUrl in $PROP"
+            exit 1
+          fi
+
           mkdir -p /tmp/gradle-dist
           curl -L "$URL" -o /tmp/gradle.zip
           unzip -q /tmp/gradle.zip -d /tmp/gradle-dist
           GRADLE_BIN=$(find /tmp/gradle-dist -maxdepth 3 -type f -path "*/bin/gradle" | head -n 1)
+
+          if [ -z "$GRADLE_BIN" ]; then
+            echo "::error::Cannot find gradle binary after unzip"
+            exit 1
+          fi
+
           chmod +x "$GRADLE_BIN"
           echo "cmd=$GRADLE_BIN" >> "$GITHUB_OUTPUT"
 
-      - name: Build :duix-sdk Debug (fail fast)
-        shell: bash
-        run: |
-          set -e
-          set -o pipefail
-          echo "== BUILD :duix-sdk:assembleDebug ==" | tee -a "${LOG_FILE}"
-          "${{ steps.gradle.outputs.cmd }}" -p "${GRADLE_ROOT}" :duix-sdk:assembleDebug --stacktrace --info 2>&1 | tee -a "${LOG_FILE}"
-
-      - name: Build :test Debug APK (fail fast)
+      - name: Build :test Debug APK (fail fast, capture log)
         shell: bash
         run: |
           set -e
           set -o pipefail
           echo "== BUILD :test:assembleDebug ==" | tee -a "${LOG_FILE}"
-          "${{ steps.gradle.outputs.cmd }}" -p "${GRADLE_ROOT}" :test:assembleDebug --stacktrace --info 2>&1 | tee -a "${LOG_FILE}"
+          "${{ steps.gradle.outputs.cmd }}" -p "${GRADLE_ROOT}" :test:assembleDebug \
+            --no-daemon --console=plain --stacktrace --info 2>&1 | tee -a "${LOG_FILE}"
 
       - name: Upload Debug APK
         if: success()
@@ -94,15 +103,33 @@ jobs:
           path: duix-android/dh_aigc_android/test/build/outputs/apk/debug/*.apk
           if-no-files-found: error
 
-      - name: Debug on failure (Kotlin errors in red)
+      - name: Debug on failure (print Kotlin errors + context)
         if: failure()
         shell: bash
         run: |
-          echo "::group::Kotlin compile errors (red)"
           RED=$'\033[1;31m'; NC=$'\033[0m'
-          grep -nE '(^e: |Unresolved reference|: error:|> Task .* FAILED|FAILURE:|Caused by:|incompatible version of Kotlin|Kotlin metadata)' \
-            "${LOG_FILE}" | head -n 300 | sed -e "s/^/${RED}/" -e "s/$/${NC}/" || true
+
+          echo "::group::Kotlin error lines (red)"
+          grep -nE '(^e: |Unresolved reference|: error:|was compiled with an incompatible version of Kotlin|Kotlin metadata|Compilation failed|Compilation error)' \
+            "${LOG_FILE}" \
+            | head -n 400 \
+            | sed -e "s/^/${RED}/" -e "s/$/${NC}/" \
+            || true
           echo "::endgroup::"
+
+          echo "::group::Context around :test:compileDebugKotlin FAILED"
+          LINE=$(grep -nE '> Task :test:compileDebugKotlin FAILED|:test:compileDebugKotlin FAILED' "${LOG_FILE}" | head -n 1 | cut -d: -f1 || true)
+          if [ -n "$LINE" ]; then
+            START=$((LINE-250)); [ $START -lt 1 ] && START=1
+            END=$((LINE+250))
+            sed -n "${START},${END}p" "${LOG_FILE}" | sed -e "s/^/${RED}/" -e "s/$/${NC}/" || true
+          else
+            echo "Cannot find ':test:compileDebugKotlin FAILED' line in log."
+            tail -n 400 "${LOG_FILE}" || true
+          fi
+          echo "::endgroup::"
+
+          echo "::error::Build failed. Download artifact gradle-build-log for full log."
 
       - name: Upload Gradle build log (always)
         if: always()
