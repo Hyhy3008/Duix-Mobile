@@ -2,30 +2,39 @@
 buildscript {
     repositories {
 
+        // Ưu tiên repo chính thống trước để tránh thiếu POM/module
+        google()
+        mavenCentral()
+
+        // Aliyun + các repo khác (để fallback)
         maven { url 'https://maven.aliyun.com/repository/public/' }
         maven { url 'https://maven.aliyun.com/repository/central' }
         maven { url 'https://maven.aliyun.com/repository/google' }
         maven { url 'https://maven.aliyun.com/repository/gradle-plugin' }
         maven { url 'https://jitpack.io' }
         maven { url 'https://repo1.maven.org/maven2/' }
-        google()
     }
     dependencies {
         classpath 'com.android.tools.build:gradle:8.1.2'
-        classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:1.8.10'
+        // NÂNG KOTLIN để tránh Kotlin metadata mismatch
+        classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.22'
     }
 }
 
 allprojects {
     repositories {
 
+        // Ưu tiên repo chính thống trước
+        google()
+        mavenCentral()
+
+        // Fallback
         maven { url 'https://maven.aliyun.com/repository/public/' }
         maven { url 'https://maven.aliyun.com/repository/central' }
         maven { url 'https://maven.aliyun.com/repository/google' }
         maven { url 'https://maven.aliyun.com/repository/gradle-plugin' }
         maven { url 'https://jitpack.io' }
         maven { url 'https://repo1.maven.org/maven2/' }
-        google()
     }
 }
 
