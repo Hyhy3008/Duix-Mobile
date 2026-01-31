@@ -1,40 +1,93 @@
-buildscript {
-    repositories {
-        google()
-        mavenCentral()
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
 
-        maven { url 'https://maven.aliyun.com/repository/public/' }
-        maven { url 'https://maven.aliyun.com/repository/central' }
-        maven { url 'https://maven.aliyun.com/repository/google' }
-        maven { url 'https://maven.aliyun.com/repository/gradle-plugin' }
-        maven { url 'https://jitpack.io' }
-        maven { url 'https://repo1.maven.org/maven2/' }
+static def getCurrentTime() {
+    return new Date().format("yyyy-MM-dd-HH-mm", TimeZone.getTimeZone("GMT+08:00"))
+}
+
+android {
+    namespace 'ai.guiji.duix.test'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "ai.guiji.duix.test"
+        minSdk 24
+        targetSdk 34
+        versionCode 13
+        versionName '4.1.1'
     }
-    dependencies {
-        classpath 'com.android.tools.build:gradle:8.1.2'
-        classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.22'
+
+    signingConfigs {
+        release {
+            storeFile file('../demo.jks')
+            storePassword '123456'
+            keyAlias 'demo'
+            keyPassword '123456'
+        }
+    }
+
+    buildTypes {
+        debug {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            signingConfig signingConfigs.release
+        }
+        release {
+            minifyEnabled true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            signingConfig signingConfigs.release
+
+            applicationVariants.all { variant ->
+                variant.outputs.all {
+                    outputFileName = "duix_mobile_test_${buildType.name}_${getCurrentTime()}_${defaultConfig.versionName}.apk"
+                }
+            }
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+    kotlinOptions {
+        jvmTarget = '1.8'
+    }
+
+    buildFeatures {
+        viewBinding true
+    }
+
+    packaging {
+        resources {
+            excludes += '/META-INF/{AL2.0,LGPL2.1}'
+        }
+    }
+
+    lint {
+        baseline = file("lint-baseline.xml")
+    }
+    lintOptions{
+        checkReleaseBuilds false
     }
 }
 
-allprojects {
-    repositories {
-        google()
-        mavenCentral()
+dependencies {
+    implementation fileTree(include: ['*.jar', '*.aar'], dir: 'libs')
 
-        maven { url 'https://maven.aliyun.com/repository/public/' }
-        maven { url 'https://maven.aliyun.com/repository/central' }
-        maven { url 'https://maven.aliyun.com/repository/google' }
-        maven { url 'https://maven.aliyun.com/repository/gradle-plugin' }
-        maven { url 'https://jitpack.io' }
-        maven { url 'https://repo1.maven.org/maven2/' }
-    }
-}
+    implementation 'androidx.core:core-ktx:1.12.0'
+    implementation 'androidx.appcompat:appcompat:1.2.0'
+    implementation 'com.google.android.material:material:1.4.0'
+    implementation 'androidx.constraintlayout:constraintlayout:2.1.1'
+    implementation "androidx.activity:activity:1.3.0"
+    implementation "androidx.fragment:fragment:1.3.0"
 
-ext {
-    compileSdkVersion = 33
-    buildToolsVersion = '30.0.2'
-    minSdkVersion = 24
-    targetSdkVersion = 33
-    versionCode = 2
-    versionName = "0.0.2"
+    implementation 'com.github.bumptech.glide:glide:4.12.0'
+
+    implementation project(":duix-sdk")
+
+    // LLM + coroutine
+    implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.6.4"
 }
