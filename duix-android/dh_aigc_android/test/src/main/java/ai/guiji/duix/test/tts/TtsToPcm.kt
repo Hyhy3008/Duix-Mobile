@@ -15,7 +15,7 @@ class TtsToPcm(ctx: Context) {
     private val appCtx = ctx.applicationContext
     private val ready = CompletableDeferred<Unit>()
 
-    // Nullable để tránh lỗi "Variable 'tts' must be initialized"
+    // Nullable để tránh lỗi "must be initialized"
     private var tts: TextToSpeech? = null
 
     init {
