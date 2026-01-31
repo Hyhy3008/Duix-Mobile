@@ -49,6 +49,7 @@ jobs:
         shell: bash
         run: |
           set -e
+          echo "== sdkmanager install ==" | tee -a "${LOG_FILE}"
           sdkmanager --install \
             "platform-tools" \
             "platforms;android-34" \
@@ -56,19 +57,20 @@ jobs:
             "cmake;3.18.1" \
             "ndk;25.2.9519653" 2>&1 | tee -a "${LOG_FILE}"
 
-          # avoid "yes: Broken pipe" failing the job
+          echo "== accept licenses ==" | tee -a "${LOG_FILE}"
+          # Tránh lỗi "yes: Broken pipe" làm fail job
           set +o pipefail
           yes | sdkmanager --licenses >/dev/null
           set -o pipefail
 
-      - name: Bootstrap Gradle (if gradlew missing)
+      - name: Bootstrap Gradle (use gradlew if exists, else download distribution)
         shell: bash
         run: |
           set -e
           if [ -f "${GRADLE_ROOT}/gradlew" ]; then
-            echo "Found gradlew, will use it" | tee -a "${LOG_FILE}"
             chmod +x "${GRADLE_ROOT}/gradlew"
             echo "GRADLE_CMD=${GRADLE_ROOT}/gradlew" >> "$GITHUB_ENV"
+            echo "Using repo gradlew" | tee -a "${LOG_FILE}"
             exit 0
           fi
 
@@ -78,7 +80,6 @@ jobs:
             exit 1
           fi
 
-          # distributionUrl in wrapper properties uses escaped ":" => \:
           URL=$(grep -E '^distributionUrl=' "$PROP" | cut -d= -f2- | sed 's/\\:/:/g')
           if [ -z "$URL" ]; then
             echo "::error::Cannot read distributionUrl from $PROP"
@@ -97,8 +98,8 @@ jobs:
           fi
 
           chmod +x "$GRADLE_BIN"
-          echo "Using gradle: $GRADLE_BIN" | tee -a "${LOG_FILE}"
           echo "GRADLE_CMD=$GRADLE_BIN" >> "$GITHUB_ENV"
+          echo "Using gradle: $GRADLE_BIN" | tee -a "${LOG_FILE}"
 
       - name: List Gradle projects (debug)
         shell: bash
@@ -122,22 +123,19 @@ jobs:
           path: duix-android/dh_aigc_android/test/build/outputs/apk/debug/*.apk
           if-no-files-found: error
 
-      - name: Debug on failure (print & color error lines)
+      - name: Debug on failure (print & color Kotlin errors)
         if: failure()
         shell: bash
         run: |
-          echo "::group::Last 300 lines of Gradle log"
-          tail -n 300 "${LOG_FILE}" || true
+          echo "::group::Last 400 lines of Gradle log"
+          tail -n 400 "${LOG_FILE}" || true
           echo "::endgroup::"
 
-          echo "::group::Highlighted error lines (red)"
+          echo "::group::Kotlin compile errors (red)"
           RED=$'\033[1;31m'
           NC=$'\033[0m'
-          grep -nE '(^\s*FAILURE:|^\s*> Task .* FAILED|: error:|Exception|Caused by:|Manifest merger failed|INSTALL_FAILED|No matching abis|CMake .* was not found|Execution failed for task)' \
-            "${LOG_FILE}" \
-            | head -n 300 \
-            | sed -e "s/^/${RED}/" -e "s/$/${NC}/" \
-            || true
+          grep -nE '(^e: |Unresolved reference|: error:|was compiled with an incompatible version of Kotlin|Kotlin metadata|Compilation failed|Compilation error)' \
+            "${LOG_FILE}" | head -n 300 | sed -e "s/^/${RED}/" -e "s/$/${NC}/" || true
           echo "::endgroup::"
 
           echo "::error::Build failed. Download artifact 'gradle-build-log' to see full log."
