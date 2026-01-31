@@ -24,7 +24,6 @@ import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 
-
 class CallActivity : BaseActivity() {
 
     companion object {
@@ -36,31 +35,28 @@ class CallActivity : BaseActivity() {
     private var mMessage = ""
 
     @SuppressLint("SetTextI18n")
-    private fun applyMessage(msg: String){
-        if (debug){
+    private fun applyMessage(msg: String) {
+        if (debug) {
             runOnUiThread {
                 binding.tvDebug.visibility = View.VISIBLE
-                if (mMessage.length > 10000){
+                if (mMessage.length > 10000) {
                     mMessage = ""
                 }
                 mMessage = "${StringUtils.dateToStringMS4()} $msg\n$mMessage"
                 binding.tvDebug.text = mMessage
             }
         }
-
     }
 
     private lateinit var binding: ActivityCallBinding
     private var duix: DUIX? = null
     private var mDUIXRender: DUIXRenderer? = null
-    private var mModelInfo: ModelInfo?=null     // 加载的模型信息
+    private var mModelInfo: ModelInfo? = null     // 加载的模型信息
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         keepScreenOn()
-//        val audioManager = mContext.getSystemService(AUDIO_SERVICE) as AudioManager
-//        audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
-//        audioManager.isSpeakerphoneOn = true
+
         binding = ActivityCallBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
@@ -71,7 +67,6 @@ class CallActivity : BaseActivity() {
 
         binding.glTextureView.setEGLContextClientVersion(GL_CONTEXT_VERSION)
         binding.glTextureView.setEGLConfigChooser(8, 8, 8, 8, 16, 0)
-//        binding.glTextureView.preserveEGLContextOnPause = true
         binding.glTextureView.isOpaque = false
 
         binding.switchMute.setOnCheckedChangeListener(object : CompoundButton.OnCheckedChangeListener {
@@ -105,9 +100,24 @@ class CallActivity : BaseActivity() {
             applyMessage("start random motion")
             duix?.startRandomMotion(true)
         }
+
         binding.btnStopPlay.setOnClickListener {
             duix?.stopAudio()
         }
+
+        // ================== STEP 2 (NEW) ==================
+        // Nhập text -> bấm Gửi -> log ra debug + toast (chưa gọi LLM/TTS)
+        binding.btnSendChat.setOnClickListener {
+            val text = binding.etChat.text?.toString()?.trim().orEmpty()
+            if (text.isEmpty()) {
+                Toast.makeText(mContext, "Bạn chưa nhập text", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            applyMessage("USER INPUT: $text")
+            Toast.makeText(mContext, "Đã nhận: $text", Toast.LENGTH_SHORT).show()
+            binding.etChat.setText("")
+        }
+        // ==================================================
 
         mDUIXRender =
             DUIXRenderer(
@@ -160,6 +170,7 @@ class CallActivity : BaseActivity() {
                 }
             }
         }
+
         // Rendering status callback
 //        duix?.setReporter(object : RenderThread.Reporter {
 //            override fun onRenderStat(
@@ -187,14 +198,14 @@ class CallActivity : BaseActivity() {
             mModelInfo?.let { modelInfo ->
                 if (modelInfo.motionRegions.isNotEmpty()) {
                     val names = ArrayList<String>()
-                    for (motion in modelInfo.motionRegions){
-                        if (!TextUtils.isEmpty(motion.name) && "unknown" != motion.name){
+                    for (motion in modelInfo.motionRegions) {
+                        if (!TextUtils.isEmpty(motion.name) && "unknown" != motion.name) {
                             names.add(motion.name)
                         }
                     }
                     // Named action regions
-                    if (names.isNotEmpty()){
-                        val motionAdapter = MotionAdapter(names, object : MotionAdapter.Callback{
+                    if (names.isNotEmpty()) {
+                        val motionAdapter = MotionAdapter(names, object : MotionAdapter.Callback {
                             override fun onClick(name: String, now: Boolean) {
                                 applyMessage("start [${name}] motion")
                                 duix?.startMotion(name, now)
@@ -209,19 +220,18 @@ class CallActivity : BaseActivity() {
         }
     }
 
-
     override fun onDestroy() {
         super.onDestroy()
         duix?.release()
     }
 
-    private fun playPCMStream(){
+    private fun playPCMStream() {
         val thread = Thread {
             duix?.startPush()
             val inputStream = assets.open("pcm/2.pcm")
             val buffer = ByteArray(320)
             var length = 0
-            while (inputStream.read(buffer).also { length = it } > 0){
+            while (inputStream.read(buffer).also { length = it } > 0) {
                 val data = buffer.copyOfRange(0, length)
                 duix?.pushPcm(data)
             }
@@ -231,14 +241,14 @@ class CallActivity : BaseActivity() {
         thread.start()
     }
 
-    private fun playWAVFile(){
+    private fun playWAVFile() {
         val thread = Thread {
             val wavName = "1.wav"
             val wavFile = File(mContext.externalCacheDir, wavName)
-            if (!wavFile.exists()){
+            if (!wavFile.exists()) {
                 // copy assets -> sd card
                 val inputStream = assets.open("wav/$wavName")
-                if (!mContext.externalCacheDir!!.exists()){
+                if (!mContext.externalCacheDir!!.exists()) {
                     mContext.externalCacheDir!!.mkdirs()
                 }
                 val out = FileOutputStream(wavFile)
@@ -257,22 +267,22 @@ class CallActivity : BaseActivity() {
 
     override fun permissionsGet(get: Boolean, code: Int) {
         super.permissionsGet(get, code)
-        if (get){
+        if (get) {
             showRecordDialog()
         } else {
             Toast.makeText(mContext, R.string.need_permission_continue, Toast.LENGTH_SHORT).show()
         }
     }
 
-    private fun showRecordDialog(){
-        val audioRecordDialog = AudioRecordDialog(mContext, object : AudioRecordDialog.Listener{
+    private fun showRecordDialog() {
+        val audioRecordDialog = AudioRecordDialog(mContext, object : AudioRecordDialog.Listener {
             override fun onFinish(path: String) {
                 val thread = Thread {
                     duix?.startPush()
                     val inputStream = FileInputStream(path)
                     val buffer = ByteArray(320)
                     var length = 0
-                    while (inputStream.read(buffer).also { length = it } > 0){
+                    while (inputStream.read(buffer).also { length = it } > 0) {
                         val data = buffer.copyOfRange(0, length)
                         duix?.pushPcm(data)
                     }
