@@ -6,6 +6,7 @@ import ai.guiji.duix.sdk.client.loader.ModelInfo
 import ai.guiji.duix.sdk.client.render.DUIXRenderer
 import ai.guiji.duix.test.R
 import ai.guiji.duix.test.databinding.ActivityCallBinding
+import ai.guiji.duix.test.tts.TtsToPcm
 import ai.guiji.duix.test.ui.adapter.MotionAdapter
 import ai.guiji.duix.test.ui.dialog.AudioRecordDialog
 import ai.guiji.duix.test.util.StringUtils
@@ -13,15 +14,12 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.opengl.GLSurfaceView
 import android.os.Bundle
-import android.speech.tts.TextToSpeech
-import android.speech.tts.UtteranceProgressListener
 import android.text.TextUtils
 import android.util.Log
 import android.view.View
 import android.widget.CompoundButton
 import android.widget.Toast
 import com.bumptech.glide.Glide
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -37,9 +35,6 @@ import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
-import java.util.Locale
 import kotlin.math.min
 
 class CallActivity : BaseActivity() {
@@ -48,7 +43,7 @@ class CallActivity : BaseActivity() {
         const val GL_CONTEXT_VERSION = 2
         private const val TAG = "CallActivity"
 
-        // HARD CODE KEY theo yêu cầu (test xong nhớ xóa/revoke)
+        // HARD CODE theo yêu cầu (test xong nhớ xóa/revoke key)
         private const val CEREBRAS_API_KEY = "csk-dwtjyxt4yrvdxf2d28fk3x8whdkdtf526njm925enm3pt32w"
         private const val CEREBRAS_ENDPOINT = "https://api.cerebras.ai/v1/chat/completions"
         private const val CEREBRAS_MODEL = "llama-3.3-70b"
@@ -64,15 +59,15 @@ class CallActivity : BaseActivity() {
     private var mDUIXRender: DUIXRenderer? = null
     private var mModelInfo: ModelInfo? = null
 
-    private val uiScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-
-    // ===== LLM client (inline) =====
+    // LLM
     private val http = OkHttpClient()
     private val jsonType = "application/json; charset=utf-8".toMediaType()
 
-    // ===== TTS (inline) =====
-    private val ttsReady = CompletableDeferred<Unit>()
-    private var tts: TextToSpeech? = null
+    // TTS -> PCM
+    private lateinit var ttsToPcm: TtsToPcm
+
+    // Coroutines
+    private val uiScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     @SuppressLint("SetTextI18n")
     private fun applyMessage(msg: String) {
@@ -94,21 +89,21 @@ class CallActivity : BaseActivity() {
         binding = ActivityCallBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
+        ttsToPcm = TtsToPcm(this)
+
         modelUrl = intent.getStringExtra("modelUrl") ?: ""
         debug = intent.getBooleanExtra("debug", false)
 
         Glide.with(mContext).load("file:///android_asset/bg/bg1.png").into(binding.ivBg)
 
-        initTts()
-
-        // GL
+        // GL init
         binding.glTextureView.setEGLContextClientVersion(GL_CONTEXT_VERSION)
         binding.glTextureView.setEGLConfigChooser(8, 8, 8, 8, 16, 0)
         binding.glTextureView.isOpaque = false
 
         binding.switchMute.setOnCheckedChangeListener(object : CompoundButton.OnCheckedChangeListener {
             override fun onCheckedChanged(buttonView: CompoundButton?, isChecked: Boolean) {
-                if (isChecked) duix?.setVolume(0.0F) else duix?.setVolume(1.0F)
+                duix?.setVolume(if (isChecked) 0.0F else 1.0F)
             }
         })
 
@@ -152,12 +147,17 @@ class CallActivity : BaseActivity() {
 
             uiScope.launch {
                 try {
+                    // 1) LLM
                     val reply = withContext(Dispatchers.IO) { callCerebras(prompt) }
                     applyMessage("LLM: $reply")
 
+                    // 2) stop current audio
                     duix?.stopAudio()
 
-                    val pcm16k = withContext(Dispatchers.IO) { ttsToPcm16k(reply) }
+                    // 3) TTS -> PCM16k
+                    val pcm16k = withContext(Dispatchers.IO) { ttsToPcm.synthesizePcm16k(reply) }
+
+                    // 4) push PCM realtime (nhép miệng)
                     withContext(Dispatchers.IO) { pushPcmRealtime(pcm16k) }
 
                 } catch (e: Exception) {
@@ -174,12 +174,12 @@ class CallActivity : BaseActivity() {
         binding.glTextureView.setRenderer(mDUIXRender)
         binding.glTextureView.renderMode = GLSurfaceView.RENDERMODE_WHEN_DIRTY
 
-        // DUIX
+        // DUIX init
         duix = DUIX(mContext, modelUrl, mDUIXRender) { event, msg, info ->
             when (event) {
                 Constant.CALLBACK_EVENT_INIT_READY -> {
                     mModelInfo = info as ModelInfo
-                    Log.i(TAG, "CALLBACK_EVENT_INIT_READY: $mModelInfo")
+                    applyMessage("init ready")
                     initOk()
                 }
 
@@ -203,7 +203,6 @@ class CallActivity : BaseActivity() {
     }
 
     private fun initOk() {
-        applyMessage("init ok")
         runOnUiThread {
             binding.btnRecord.isEnabled = true
             binding.btnPlayPCM.isEnabled = true
@@ -215,14 +214,14 @@ class CallActivity : BaseActivity() {
                 if (modelInfo.motionRegions.isNotEmpty()) {
                     val names = ArrayList<String>()
                     for (motion in modelInfo.motionRegions) {
-                        if (!TextUtils.isEmpty(motion.name) && "unknown" != motion.name) {
+                        if (!TextUtils.isEmpty(motion.name) && motion.name != "unknown") {
                             names.add(motion.name)
                         }
                     }
                     if (names.isNotEmpty()) {
                         val motionAdapter = MotionAdapter(names, object : MotionAdapter.Callback {
                             override fun onClick(name: String, now: Boolean) {
-                                applyMessage("start [$name] motion")
+                                applyMessage("start motion [$name]")
                                 duix?.startMotion(name, now)
                             }
                         })
@@ -270,141 +269,6 @@ class CallActivity : BaseActivity() {
         }
     }
 
-    // ===================== TTS -> PCM16k =====================
-    private fun initTts() {
-        var engine: TextToSpeech? = null
-        engine = TextToSpeech(applicationContext) { status ->
-            if (status == TextToSpeech.SUCCESS) {
-                engine?.language = Locale("vi", "VN")
-                ttsReady.complete(Unit)
-            } else {
-                ttsReady.completeExceptionally(IllegalStateException("TTS init failed: $status"))
-            }
-        }
-        tts = engine
-    }
-
-    private suspend fun ttsToPcm16k(text: String): ByteArray {
-        ttsReady.await()
-        val engine = tts ?: error("TTS is null")
-
-        val outFile = File(cacheDir, "tts_tmp.wav").apply { if (exists()) delete() }
-        val uttId = "utt_${System.currentTimeMillis()}"
-        val done = CompletableDeferred<Unit>()
-
-        engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-            override fun onStart(utteranceId: String) {}
-            override fun onDone(utteranceId: String) { if (utteranceId == uttId) done.complete(Unit) }
-            override fun onError(utteranceId: String) { if (utteranceId == uttId) done.completeExceptionally(RuntimeException("TTS error")) }
-        })
-
-        @Suppress("DEPRECATION")
-        engine.synthesizeToFile(text, null, outFile, uttId)
-
-        done.await()
-
-        val wav = outFile.readBytes()
-        var pcm = WavUtil.toPcm16kMono16(wav)
-
-        // SDK yêu cầu >= 1s (32000 bytes)
-        if (pcm.size < 32000) pcm = pcm + ByteArray(32000 - pcm.size)
-        return pcm
-    }
-
-    private object WavUtil {
-        data class WavInfo(
-            val sampleRate: Int,
-            val channels: Int,
-            val bitsPerSample: Int,
-            val pcmData: ByteArray
-        )
-
-        fun toPcm16kMono16(wav: ByteArray): ByteArray {
-            val info = parseWav(wav)
-            require(info.bitsPerSample == 16) { "WAV bitsPerSample=${info.bitsPerSample} (need 16)" }
-
-            var pcm = info.pcmData
-            pcm = if (info.channels == 2) stereoToMono16(pcm) else pcm
-            require(info.channels == 1 || info.channels == 2) { "WAV channels=${info.channels} (need 1 or 2)" }
-
-            if (info.sampleRate != 16000) pcm = resample16(pcm, info.sampleRate, 16000)
-            return pcm
-        }
-
-        private fun parseWav(wav: ByteArray): WavInfo {
-            fun leInt(off: Int) = ByteBuffer.wrap(wav, off, 4).order(ByteOrder.LITTLE_ENDIAN).int
-            fun leShort(off: Int) = ByteBuffer.wrap(wav, off, 2).order(ByteOrder.LITTLE_ENDIAN).short.toInt()
-
-            var offset = 12
-            var sampleRate = -1
-            var channels = -1
-            var bitsPerSample = -1
-            var dataOff = -1
-            var dataSize = -1
-
-            while (offset + 8 <= wav.size) {
-                val id = String(wav, offset, 4)
-                val size = leInt(offset + 4)
-                val dataStart = offset + 8
-
-                if (id == "fmt ") {
-                    channels = leShort(dataStart + 2)
-                    sampleRate = leInt(dataStart + 4)
-                    bitsPerSample = leShort(dataStart + 14)
-                } else if (id == "data") {
-                    dataOff = dataStart
-                    dataSize = size
-                    break
-                }
-                offset = dataStart + size
-            }
-
-            require(sampleRate > 0 && channels > 0 && bitsPerSample > 0) { "Invalid WAV: missing fmt" }
-            require(dataOff >= 0 && dataSize >= 0) { "Invalid WAV: missing data" }
-
-            val end = min(dataOff + dataSize, wav.size)
-            val pcm = wav.copyOfRange(dataOff, end)
-            return WavInfo(sampleRate, channels, bitsPerSample, pcm)
-        }
-
-        private fun stereoToMono16(stereo: ByteArray): ByteArray {
-            val out = ByteArray(stereo.size / 2)
-            var i = 0
-            var o = 0
-            while (i + 3 < stereo.size) {
-                val l = ByteBuffer.wrap(stereo, i, 2).order(ByteOrder.LITTLE_ENDIAN).short.toInt()
-                val r = ByteBuffer.wrap(stereo, i + 2, 2).order(ByteOrder.LITTLE_ENDIAN).short.toInt()
-                val m = ((l + r) / 2).toShort()
-                ByteBuffer.wrap(out, o, 2).order(ByteOrder.LITTLE_ENDIAN).putShort(m)
-                i += 4
-                o += 2
-            }
-            return out
-        }
-
-        private fun resample16(pcm16: ByteArray, fromRate: Int, toRate: Int): ByteArray {
-            val inSamples = pcm16.size / 2
-            val outSamples = (inSamples.toLong() * toRate / fromRate).toInt()
-            val out = ByteArray(outSamples * 2)
-
-            fun sampleAt(idx: Int): Int {
-                val i = (idx.coerceIn(0, inSamples - 1)) * 2
-                return ByteBuffer.wrap(pcm16, i, 2).order(ByteOrder.LITTLE_ENDIAN).short.toInt()
-            }
-
-            for (i in 0 until outSamples) {
-                val srcPos = i.toDouble() * fromRate / toRate
-                val p0 = srcPos.toInt()
-                val t = srcPos - p0
-                val s0 = sampleAt(p0)
-                val s1 = sampleAt(p0 + 1)
-                val v = (s0 + (s1 - s0) * t).toInt().toShort()
-                ByteBuffer.wrap(out, i * 2, 2).order(ByteOrder.LITTLE_ENDIAN).putShort(v)
-            }
-            return out
-        }
-    }
-
     // ===================== PUSH PCM -> DUIX =====================
     private fun pushPcmRealtime(pcm: ByteArray) {
         val d = duix ?: return
@@ -421,7 +285,7 @@ class CallActivity : BaseActivity() {
         d.stopPush()
     }
 
-    // ===================== EXISTING DEMO FUNCTIONS =====================
+    // ===================== EXISTING DEMO =====================
     private fun playPCMStream() {
         val thread = Thread {
             duix?.startPush()
@@ -492,8 +356,7 @@ class CallActivity : BaseActivity() {
         super.onDestroy()
         uiScope.cancel()
         try {
-            tts?.stop()
-            tts?.shutdown()
+            ttsToPcm.release()
         } catch (_: Exception) {}
         duix?.release()
     }
