@@ -6,6 +6,7 @@ import ai.guiji.duix.sdk.client.loader.ModelInfo
 import ai.guiji.duix.sdk.client.render.DUIXRenderer
 import ai.guiji.duix.test.R
 import ai.guiji.duix.test.databinding.ActivityCallBinding
+import ai.guiji.duix.test.llm.LlmClient
 import ai.guiji.duix.test.tts.TtsToPcm
 import ai.guiji.duix.test.ui.adapter.MotionAdapter
 import ai.guiji.duix.test.ui.dialog.AudioRecordDialog
@@ -26,12 +27,6 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONArray
-import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -42,26 +37,21 @@ class CallActivity : BaseActivity() {
     companion object {
         const val GL_CONTEXT_VERSION = 2
         private const val TAG = "CallActivity"
-
-        private const val CEREBRAS_API_KEY = "csk-dwtjyxt4yrvdxf2d28fk3x8whdkdtf526njm925enm3pt32w"
-        private const val CEREBRAS_ENDPOINT = "https://api.cerebras.ai/v1/chat/completions"
-        private const val CEREBRAS_MODEL = "llama-3.3-70b"
     }
 
     private lateinit var binding: ActivityCallBinding
-    private var modelUrl = ""
-    private var debug = false
-    private var mMessage = ""
-
     private var duix: DUIX? = null
     private var mDUIXRender: DUIXRenderer? = null
     private var mModelInfo: ModelInfo? = null
 
-    private val http = OkHttpClient()
-    private val jsonType = "application/json; charset=utf-8".toMediaType()
+    private var modelUrl = ""
+    private var debug = false
+    private var mMessage = ""
 
-    private lateinit var ttsToPcm: TtsToPcm
     private val uiScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+
+    private val llmClient = LlmClient()
+    private lateinit var ttsToPcm: TtsToPcm
 
     @SuppressLint("SetTextI18n")
     private fun applyMessage(msg: String) {
@@ -94,18 +84,19 @@ class CallActivity : BaseActivity() {
         binding.glTextureView.setEGLConfigChooser(8, 8, 8, 8, 16, 0)
         binding.glTextureView.isOpaque = false
 
-        binding.switchMute.setOnCheckedChangeListener { _: CompoundButton?, isChecked: Boolean ->
-            duix?.setVolume(if (isChecked) 0.0F else 1.0F)
-        }
+        binding.switchMute.setOnCheckedChangeListener(object : CompoundButton.OnCheckedChangeListener {
+            override fun onCheckedChanged(buttonView: CompoundButton?, isChecked: Boolean) {
+                duix?.setVolume(if (isChecked) 0.0F else 1.0F)
+            }
+        })
 
         binding.btnRecord.setOnClickListener { requestPermission(arrayOf(Manifest.permission.RECORD_AUDIO), 1) }
-
         binding.btnPlayPCM.setOnClickListener { applyMessage("start play pcm"); playPCMStream() }
         binding.btnPlayWAV.setOnClickListener { applyMessage("start play wav"); playWAVFile() }
         binding.btnRandomMotion.setOnClickListener { applyMessage("start random motion"); duix?.startRandomMotion(true) }
         binding.btnStopPlay.setOnClickListener { duix?.stopAudio() }
 
-        // CHAT: text -> LLM -> TTS -> push PCM
+        // CHAT: user -> LLM -> TTS -> push PCM
         binding.btnSendChat.setOnClickListener {
             val prompt = binding.etChat.text?.toString()?.trim().orEmpty()
             if (prompt.isEmpty()) {
@@ -122,12 +113,13 @@ class CallActivity : BaseActivity() {
 
             uiScope.launch {
                 try {
-                    val reply = withContext(Dispatchers.IO) { callCerebras(prompt) }
+                    val reply = llmClient.chat(prompt)
                     applyMessage("LLM: $reply")
 
                     duix?.stopAudio()
 
-                    val pcm16k = withContext(Dispatchers.IO) { ttsToPcm.synthesizePcm16k(reply) }
+                    val pcm16k = ttsToPcm.synthesizePcm16k(reply)
+
                     withContext(Dispatchers.IO) { pushPcmRealtime(pcm16k) }
 
                 } catch (e: Exception) {
@@ -139,20 +131,24 @@ class CallActivity : BaseActivity() {
             }
         }
 
+        // Renderer
         mDUIXRender = DUIXRenderer(mContext, binding.glTextureView)
         binding.glTextureView.setRenderer(mDUIXRender)
         binding.glTextureView.renderMode = GLSurfaceView.RENDERMODE_WHEN_DIRTY
 
+        // DUIX init
         duix = DUIX(mContext, modelUrl, mDUIXRender) { event, msg, info ->
             when (event) {
                 Constant.CALLBACK_EVENT_INIT_READY -> {
                     mModelInfo = info as ModelInfo
                     initOk()
                 }
+
                 Constant.CALLBACK_EVENT_INIT_ERROR -> runOnUiThread {
                     applyMessage("init error: $msg")
                     Toast.makeText(mContext, "Initialization exception: $msg", Toast.LENGTH_SHORT).show()
                 }
+
                 Constant.CALLBACK_EVENT_AUDIO_PLAY_START -> applyMessage("callback audio play start")
                 Constant.CALLBACK_EVENT_AUDIO_PLAY_END -> applyMessage("callback audio play end")
                 Constant.CALLBACK_EVENT_AUDIO_PLAY_ERROR -> applyMessage("callback audio play error: $msg")
@@ -192,35 +188,6 @@ class CallActivity : BaseActivity() {
                     binding.tvMotionTips.visibility = View.VISIBLE
                 }
             }
-        }
-    }
-
-    private fun callCerebras(prompt: String): String {
-        val body = JSONObject().apply {
-            put("model", CEREBRAS_MODEL)
-            put("stream", false)
-            put("messages", JSONArray().put(JSONObject().apply {
-                put("role", "user")
-                put("content", prompt)
-            }))
-        }
-
-        val req = Request.Builder()
-            .url(CEREBRAS_ENDPOINT)
-            .addHeader("Content-Type", "application/json")
-            .addHeader("Authorization", "Bearer $CEREBRAS_API_KEY")
-            .post(body.toString().toRequestBody(jsonType))
-            .build()
-
-        http.newCall(req).execute().use { resp ->
-            val text = resp.body?.string().orEmpty()
-            if (!resp.isSuccessful) error("Cerebras HTTP ${resp.code}: $text")
-
-            val json = JSONObject(text)
-            return json.getJSONArray("choices")
-                .getJSONObject(0)
-                .getJSONObject("message")
-                .getString("content")
         }
     }
 
