@@ -43,14 +43,12 @@ class CallActivity : BaseActivity() {
         const val GL_CONTEXT_VERSION = 2
         private const val TAG = "CallActivity"
 
-        // HARD CODE theo yêu cầu (test xong nhớ xóa/revoke key)
         private const val CEREBRAS_API_KEY = "csk-dwtjyxt4yrvdxf2d28fk3x8whdkdtf526njm925enm3pt32w"
         private const val CEREBRAS_ENDPOINT = "https://api.cerebras.ai/v1/chat/completions"
         private const val CEREBRAS_MODEL = "llama-3.3-70b"
     }
 
     private lateinit var binding: ActivityCallBinding
-
     private var modelUrl = ""
     private var debug = false
     private var mMessage = ""
@@ -59,14 +57,10 @@ class CallActivity : BaseActivity() {
     private var mDUIXRender: DUIXRenderer? = null
     private var mModelInfo: ModelInfo? = null
 
-    // LLM
     private val http = OkHttpClient()
     private val jsonType = "application/json; charset=utf-8".toMediaType()
 
-    // TTS -> PCM
     private lateinit var ttsToPcm: TtsToPcm
-
-    // Coroutines
     private val uiScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     @SuppressLint("SetTextI18n")
@@ -96,41 +90,22 @@ class CallActivity : BaseActivity() {
 
         Glide.with(mContext).load("file:///android_asset/bg/bg1.png").into(binding.ivBg)
 
-        // GL init
         binding.glTextureView.setEGLContextClientVersion(GL_CONTEXT_VERSION)
         binding.glTextureView.setEGLConfigChooser(8, 8, 8, 8, 16, 0)
         binding.glTextureView.isOpaque = false
 
-        binding.switchMute.setOnCheckedChangeListener(object : CompoundButton.OnCheckedChangeListener {
-            override fun onCheckedChanged(buttonView: CompoundButton?, isChecked: Boolean) {
-                duix?.setVolume(if (isChecked) 0.0F else 1.0F)
-            }
-        })
-
-        binding.btnRecord.setOnClickListener {
-            requestPermission(arrayOf(Manifest.permission.RECORD_AUDIO), 1)
+        binding.switchMute.setOnCheckedChangeListener { _: CompoundButton?, isChecked: Boolean ->
+            duix?.setVolume(if (isChecked) 0.0F else 1.0F)
         }
 
-        binding.btnPlayPCM.setOnClickListener {
-            applyMessage("start play pcm")
-            playPCMStream()
-        }
+        binding.btnRecord.setOnClickListener { requestPermission(arrayOf(Manifest.permission.RECORD_AUDIO), 1) }
 
-        binding.btnPlayWAV.setOnClickListener {
-            applyMessage("start play wav")
-            playWAVFile()
-        }
+        binding.btnPlayPCM.setOnClickListener { applyMessage("start play pcm"); playPCMStream() }
+        binding.btnPlayWAV.setOnClickListener { applyMessage("start play wav"); playWAVFile() }
+        binding.btnRandomMotion.setOnClickListener { applyMessage("start random motion"); duix?.startRandomMotion(true) }
+        binding.btnStopPlay.setOnClickListener { duix?.stopAudio() }
 
-        binding.btnRandomMotion.setOnClickListener {
-            applyMessage("start random motion")
-            duix?.startRandomMotion(true)
-        }
-
-        binding.btnStopPlay.setOnClickListener {
-            duix?.stopAudio()
-        }
-
-        // ===== CHAT: USER -> LLM -> TTS -> PUSH PCM =====
+        // CHAT: text -> LLM -> TTS -> push PCM
         binding.btnSendChat.setOnClickListener {
             val prompt = binding.etChat.text?.toString()?.trim().orEmpty()
             if (prompt.isEmpty()) {
@@ -147,17 +122,12 @@ class CallActivity : BaseActivity() {
 
             uiScope.launch {
                 try {
-                    // 1) LLM
                     val reply = withContext(Dispatchers.IO) { callCerebras(prompt) }
                     applyMessage("LLM: $reply")
 
-                    // 2) stop current audio
                     duix?.stopAudio()
 
-                    // 3) TTS -> PCM16k
                     val pcm16k = withContext(Dispatchers.IO) { ttsToPcm.synthesizePcm16k(reply) }
-
-                    // 4) push PCM realtime (nhép miệng)
                     withContext(Dispatchers.IO) { pushPcmRealtime(pcm16k) }
 
                 } catch (e: Exception) {
@@ -169,27 +139,20 @@ class CallActivity : BaseActivity() {
             }
         }
 
-        // Renderer
         mDUIXRender = DUIXRenderer(mContext, binding.glTextureView)
         binding.glTextureView.setRenderer(mDUIXRender)
         binding.glTextureView.renderMode = GLSurfaceView.RENDERMODE_WHEN_DIRTY
 
-        // DUIX init
         duix = DUIX(mContext, modelUrl, mDUIXRender) { event, msg, info ->
             when (event) {
                 Constant.CALLBACK_EVENT_INIT_READY -> {
                     mModelInfo = info as ModelInfo
-                    applyMessage("init ready")
                     initOk()
                 }
-
-                Constant.CALLBACK_EVENT_INIT_ERROR -> {
-                    runOnUiThread {
-                        applyMessage("init error: $msg")
-                        Toast.makeText(mContext, "Initialization exception: $msg", Toast.LENGTH_SHORT).show()
-                    }
+                Constant.CALLBACK_EVENT_INIT_ERROR -> runOnUiThread {
+                    applyMessage("init error: $msg")
+                    Toast.makeText(mContext, "Initialization exception: $msg", Toast.LENGTH_SHORT).show()
                 }
-
                 Constant.CALLBACK_EVENT_AUDIO_PLAY_START -> applyMessage("callback audio play start")
                 Constant.CALLBACK_EVENT_AUDIO_PLAY_END -> applyMessage("callback audio play end")
                 Constant.CALLBACK_EVENT_AUDIO_PLAY_ERROR -> applyMessage("callback audio play error: $msg")
@@ -203,6 +166,7 @@ class CallActivity : BaseActivity() {
     }
 
     private fun initOk() {
+        applyMessage("init ok")
         runOnUiThread {
             binding.btnRecord.isEnabled = true
             binding.btnPlayPCM.isEnabled = true
@@ -214,18 +178,15 @@ class CallActivity : BaseActivity() {
                 if (modelInfo.motionRegions.isNotEmpty()) {
                     val names = ArrayList<String>()
                     for (motion in modelInfo.motionRegions) {
-                        if (!TextUtils.isEmpty(motion.name) && motion.name != "unknown") {
-                            names.add(motion.name)
-                        }
+                        if (!TextUtils.isEmpty(motion.name) && motion.name != "unknown") names.add(motion.name)
                     }
                     if (names.isNotEmpty()) {
-                        val motionAdapter = MotionAdapter(names, object : MotionAdapter.Callback {
+                        binding.rvMotion.adapter = MotionAdapter(names, object : MotionAdapter.Callback {
                             override fun onClick(name: String, now: Boolean) {
                                 applyMessage("start motion [$name]")
                                 duix?.startMotion(name, now)
                             }
                         })
-                        binding.rvMotion.adapter = motionAdapter
                     }
                     binding.btnRandomMotion.visibility = View.VISIBLE
                     binding.tvMotionTips.visibility = View.VISIBLE
@@ -234,20 +195,14 @@ class CallActivity : BaseActivity() {
         }
     }
 
-    // ===================== LLM =====================
     private fun callCerebras(prompt: String): String {
         val body = JSONObject().apply {
             put("model", CEREBRAS_MODEL)
             put("stream", false)
-            put(
-                "messages",
-                JSONArray().put(
-                    JSONObject().apply {
-                        put("role", "user")
-                        put("content", prompt)
-                    }
-                )
-            )
+            put("messages", JSONArray().put(JSONObject().apply {
+                put("role", "user")
+                put("content", prompt)
+            }))
         }
 
         val req = Request.Builder()
@@ -269,7 +224,6 @@ class CallActivity : BaseActivity() {
         }
     }
 
-    // ===================== PUSH PCM -> DUIX =====================
     private fun pushPcmRealtime(pcm: ByteArray) {
         val d = duix ?: return
         val chunk = 320 // 10ms @ 16kHz mono 16-bit
@@ -285,7 +239,6 @@ class CallActivity : BaseActivity() {
         d.stopPush()
     }
 
-    // ===================== EXISTING DEMO =====================
     private fun playPCMStream() {
         val thread = Thread {
             duix?.startPush()
@@ -293,8 +246,7 @@ class CallActivity : BaseActivity() {
             val buffer = ByteArray(320)
             var length = 0
             while (inputStream.read(buffer).also { length = it } > 0) {
-                val data = buffer.copyOfRange(0, length)
-                duix?.pushPcm(data)
+                duix?.pushPcm(buffer.copyOfRange(0, length))
             }
             duix?.stopPush()
             inputStream.close()
@@ -308,15 +260,11 @@ class CallActivity : BaseActivity() {
             val wavFile = File(mContext.externalCacheDir, wavName)
             if (!wavFile.exists()) {
                 val inputStream = assets.open("wav/$wavName")
-                if (!mContext.externalCacheDir!!.exists()) {
-                    mContext.externalCacheDir!!.mkdirs()
-                }
+                mContext.externalCacheDir?.mkdirs()
                 val out = FileOutputStream(wavFile)
                 val buffer = ByteArray(1024)
                 var length = 0
-                while ((inputStream.read(buffer).also { length = it }) > 0) {
-                    out.write(buffer, 0, length)
-                }
+                while ((inputStream.read(buffer).also { length = it }) > 0) out.write(buffer, 0, length)
                 out.close()
                 inputStream.close()
             }
@@ -332,7 +280,7 @@ class CallActivity : BaseActivity() {
     }
 
     private fun showRecordDialog() {
-        val audioRecordDialog = AudioRecordDialog(mContext, object : AudioRecordDialog.Listener {
+        val dialog = AudioRecordDialog(mContext, object : AudioRecordDialog.Listener {
             override fun onFinish(path: String) {
                 val thread = Thread {
                     duix?.startPush()
@@ -340,8 +288,7 @@ class CallActivity : BaseActivity() {
                     val buffer = ByteArray(320)
                     var length = 0
                     while (inputStream.read(buffer).also { length = it } > 0) {
-                        val data = buffer.copyOfRange(0, length)
-                        duix?.pushPcm(data)
+                        duix?.pushPcm(buffer.copyOfRange(0, length))
                     }
                     duix?.stopPush()
                     inputStream.close()
@@ -349,15 +296,13 @@ class CallActivity : BaseActivity() {
                 thread.start()
             }
         })
-        audioRecordDialog.show()
+        dialog.show()
     }
 
     override fun onDestroy() {
         super.onDestroy()
         uiScope.cancel()
-        try {
-            ttsToPcm.release()
-        } catch (_: Exception) {}
+        try { ttsToPcm.release() } catch (_: Exception) {}
         duix?.release()
     }
 }
