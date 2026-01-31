@@ -1,4 +1,4 @@
-name: Build Debug APK (Stop on Kotlin error + Print real errors)
+name: Build Debug APK (Web-safe)
 
 on:
   push:
@@ -11,7 +11,7 @@ jobs:
 
     env:
       GRADLE_ROOT: duix-android/dh_aigc_android
-      LOG_FILE: ${{ github.workspace }}/gradle-kotlin.log
+      LOG_FILE: ${{ github.workspace }}/gradle-build.log
 
     steps:
       - uses: actions/checkout@v4
@@ -25,14 +25,18 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Setup Gradle cache
+      # Tắt cache để khỏi nhiễu lỗi cache 400
+      - name: Setup Gradle (cache disabled)
         uses: gradle/actions/setup-gradle@v3
+        with:
+          cache-disabled: true
 
       - name: Init log
         shell: bash
         run: |
           : > "${LOG_FILE}"
-          echo "LOG_FILE=${LOG_FILE}"
+          echo "Gradle root = ${GRADLE_ROOT}" | tee -a "${LOG_FILE}"
+          ls -la "${GRADLE_ROOT}" | tee -a "${LOG_FILE}"
 
       - name: Install Android packages + accept licenses
         shell: bash
@@ -45,7 +49,6 @@ jobs:
             "cmake;3.18.1" \
             "ndk;25.2.9519653"
 
-          # tránh lỗi yes broken pipe làm fail
           set +o pipefail
           yes | sdkmanager --licenses >/dev/null
           set -o pipefail
@@ -62,12 +65,8 @@ jobs:
           fi
 
           PROP="${GRADLE_ROOT}/gradle/wrapper/gradle-wrapper.properties"
-          if [ ! -f "$PROP" ]; then
-            echo "::error::No gradlew and no $PROP"
-            exit 1
-          fi
-
           URL=$(grep -E '^distributionUrl=' "$PROP" | cut -d= -f2- | sed 's/\\:/:/g')
+
           mkdir -p /tmp/gradle-dist
           curl -L "$URL" -o /tmp/gradle.zip
           unzip -q /tmp/gradle.zip -d /tmp/gradle-dist
@@ -75,80 +74,50 @@ jobs:
           chmod +x "$GRADLE_BIN"
           echo "cmd=$GRADLE_BIN" >> "$GITHUB_OUTPUT"
 
-      # 1) CHỈ COMPILE KOTLIN TRƯỚC (để lỗi ra gọn)
-      # 2) continue-on-error để còn chạy step extract
-      - name: Compile Kotlin :test:compileDebugKotlin (capture log)
-        id: compile
+      - name: Build :test:assembleDebug (capture log)
+        id: build
         continue-on-error: true
         shell: bash
         run: |
           : > "${LOG_FILE}"
           set +e
           set -o pipefail
-          echo "== :test:compileDebugKotlin ==" | tee -a "${LOG_FILE}"
-          "${{ steps.gradle.outputs.cmd }}" -p "${GRADLE_ROOT}" :test:compileDebugKotlin \
+          echo "== BUILD :test:assembleDebug ==" | tee -a "${LOG_FILE}"
+          "${{ steps.gradle.outputs.cmd }}" -p "${GRADLE_ROOT}" :test:assembleDebug \
             --no-daemon --console=plain --stacktrace --info 2>&1 | tee -a "${LOG_FILE}"
           EXIT=${PIPESTATUS[0]}
           echo "exit_code=$EXIT" >> "$GITHUB_OUTPUT"
-          echo "compile exit_code=$EXIT" | tee -a "${LOG_FILE}"
+          echo "exit_code=$EXIT" | tee -a "${LOG_FILE}"
           exit 0
 
-      - name: Extract REAL Kotlin errors (red)
-        if: always()
+      - name: Print Kotlin errors (if failed)
+        if: ${{ steps.build.outputs.exit_code != '0' }}
         shell: bash
         run: |
-          set +e
-          set +o pipefail
-
-          echo "compile exit_code = ${{ steps.compile.outputs.exit_code }}"
-
-          RED=$'\033[1;31m'; NC=$'\033[0m'
-
-          echo "::group::Kotlin errors (e:/unresolved/mismatch) (red)"
-          grep -nE '(^e: |Unresolved reference|: error:|was compiled with an incompatible version of Kotlin|Kotlin metadata)' \
-            "${LOG_FILE}" | head -n 400 | sed -e "s/^/${RED}/" -e "s/$/${NC}/" || true
+          echo "::group::Kotlin/Java errors (best effort)"
+          grep -nE '(^e: |\.kt:[0-9]+:[0-9]+| error:|Unresolved reference|Type mismatch|incompatible version of Kotlin|Kotlin metadata|> Task .* FAILED|FAILURE:|Caused by:)' \
+            "${LOG_FILE}" | head -n 400 || true
           echo "::endgroup::"
+          echo "::error::Build failed (see artifact gradle-build-log)."
 
-          echo "::group::Context around compileDebugKotlin FAILED"
-          LINE=$(grep -nE '> Task :test:compileDebugKotlin FAILED|:test:compileDebugKotlin FAILED' "${LOG_FILE}" | head -n 1 | cut -d: -f1 || true)
-          if [ -n "$LINE" ]; then
-            START=$((LINE-250)); [ $START -lt 1 ] && START=1
-            END=$((LINE+250))
-            sed -n "${START},${END}p" "${LOG_FILE}" | sed -e "s/^/${RED}/" -e "s/$/${NC}/" || true
-          else
-            echo "Cannot find ':test:compileDebugKotlin FAILED' line."
-          fi
-          echo "::endgroup::"
-
-      - name: Upload kotlin compile log (always)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: kotlin-compile-log
-          path: ${{ github.workspace }}/gradle-kotlin.log
-          if-no-files-found: error
-
-      # DỪNG NGAY SAU KHI CÓ LỖI COMPILE (fail-fast đúng nghĩa)
-      - name: Fail if Kotlin compile failed
-        if: ${{ steps.compile.outputs.exit_code != '0' }}
-        shell: bash
-        run: |
-          echo "::error::Kotlin compile failed (exit_code=${{ steps.compile.outputs.exit_code }}). See artifact kotlin-compile-log."
-          exit 1
-
-      # Nếu compile OK mới build APK
-      - name: Assemble Debug APK
-        shell: bash
-        run: |
-          set -e
-          set -o pipefail
-          "${{ steps.gradle.outputs.cmd }}" -p "${GRADLE_ROOT}" :test:assembleDebug \
-            --no-daemon --console=plain --stacktrace --info 2>&1 | tee -a "${LOG_FILE}"
-
-      - name: Upload Debug APK
-        if: success()
+      - name: Upload APK (if success)
+        if: ${{ steps.build.outputs.exit_code == '0' }}
         uses: actions/upload-artifact@v4
         with:
           name: debug-apk
           path: duix-android/dh_aigc_android/test/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+
+      - name: Upload build log (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gradle-build-log
+          path: ${{ github.workspace }}/gradle-build.log
+          if-no-files-found: error
+
+      - name: Fail job if build failed
+        if: ${{ steps.build.outputs.exit_code != '0' }}
+        shell: bash
+        run: |
+          exit 1
