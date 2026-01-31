@@ -1,4 +1,4 @@
-name: Build Debug APK (Fail Fast + Show Kotlin Errors)
+name: Build Debug APK (Stop on Kotlin error + Print real errors)
 
 on:
   push:
@@ -11,7 +11,7 @@ jobs:
 
     env:
       GRADLE_ROOT: duix-android/dh_aigc_android
-      LOG_FILE: ${{ github.workspace }}/gradle-build.log
+      LOG_FILE: ${{ github.workspace }}/gradle-kotlin.log
 
     steps:
       - uses: actions/checkout@v4
@@ -28,7 +28,7 @@ jobs:
       - name: Setup Gradle cache
         uses: gradle/actions/setup-gradle@v3
 
-      - name: Init log file
+      - name: Init log
         shell: bash
         run: |
           : > "${LOG_FILE}"
@@ -43,14 +43,14 @@ jobs:
             "platforms;android-34" \
             "build-tools;34.0.0" \
             "cmake;3.18.1" \
-            "ndk;25.2.9519653" 2>&1 | tee -a "${LOG_FILE}"
+            "ndk;25.2.9519653"
 
-          # avoid "yes: Broken pipe" failing job
+          # tránh lỗi yes broken pipe làm fail
           set +o pipefail
           yes | sdkmanager --licenses >/dev/null
           set -o pipefail
 
-      - name: Bootstrap Gradle command (use gradlew if exists, else download distribution)
+      - name: Bootstrap Gradle command (no gradlew needed)
         id: gradle
         shell: bash
         run: |
@@ -68,30 +68,80 @@ jobs:
           fi
 
           URL=$(grep -E '^distributionUrl=' "$PROP" | cut -d= -f2- | sed 's/\\:/:/g')
-          if [ -z "$URL" ]; then
-            echo "::error::Cannot read distributionUrl in $PROP"
-            exit 1
-          fi
-
           mkdir -p /tmp/gradle-dist
           curl -L "$URL" -o /tmp/gradle.zip
           unzip -q /tmp/gradle.zip -d /tmp/gradle-dist
           GRADLE_BIN=$(find /tmp/gradle-dist -maxdepth 3 -type f -path "*/bin/gradle" | head -n 1)
-
-          if [ -z "$GRADLE_BIN" ]; then
-            echo "::error::Cannot find gradle binary after unzip"
-            exit 1
-          fi
-
           chmod +x "$GRADLE_BIN"
           echo "cmd=$GRADLE_BIN" >> "$GITHUB_OUTPUT"
 
-      - name: Build :test Debug APK (fail fast, capture log)
+      # 1) CHỈ COMPILE KOTLIN TRƯỚC (để lỗi ra gọn)
+      # 2) continue-on-error để còn chạy step extract
+      - name: Compile Kotlin :test:compileDebugKotlin (capture log)
+        id: compile
+        continue-on-error: true
+        shell: bash
+        run: |
+          : > "${LOG_FILE}"
+          set +e
+          set -o pipefail
+          echo "== :test:compileDebugKotlin ==" | tee -a "${LOG_FILE}"
+          "${{ steps.gradle.outputs.cmd }}" -p "${GRADLE_ROOT}" :test:compileDebugKotlin \
+            --no-daemon --console=plain --stacktrace --info 2>&1 | tee -a "${LOG_FILE}"
+          EXIT=${PIPESTATUS[0]}
+          echo "exit_code=$EXIT" >> "$GITHUB_OUTPUT"
+          echo "compile exit_code=$EXIT" | tee -a "${LOG_FILE}"
+          exit 0
+
+      - name: Extract REAL Kotlin errors (red)
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          set +o pipefail
+
+          echo "compile exit_code = ${{ steps.compile.outputs.exit_code }}"
+
+          RED=$'\033[1;31m'; NC=$'\033[0m'
+
+          echo "::group::Kotlin errors (e:/unresolved/mismatch) (red)"
+          grep -nE '(^e: |Unresolved reference|: error:|was compiled with an incompatible version of Kotlin|Kotlin metadata)' \
+            "${LOG_FILE}" | head -n 400 | sed -e "s/^/${RED}/" -e "s/$/${NC}/" || true
+          echo "::endgroup::"
+
+          echo "::group::Context around compileDebugKotlin FAILED"
+          LINE=$(grep -nE '> Task :test:compileDebugKotlin FAILED|:test:compileDebugKotlin FAILED' "${LOG_FILE}" | head -n 1 | cut -d: -f1 || true)
+          if [ -n "$LINE" ]; then
+            START=$((LINE-250)); [ $START -lt 1 ] && START=1
+            END=$((LINE+250))
+            sed -n "${START},${END}p" "${LOG_FILE}" | sed -e "s/^/${RED}/" -e "s/$/${NC}/" || true
+          else
+            echo "Cannot find ':test:compileDebugKotlin FAILED' line."
+          fi
+          echo "::endgroup::"
+
+      - name: Upload kotlin compile log (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kotlin-compile-log
+          path: ${{ github.workspace }}/gradle-kotlin.log
+          if-no-files-found: error
+
+      # DỪNG NGAY SAU KHI CÓ LỖI COMPILE (fail-fast đúng nghĩa)
+      - name: Fail if Kotlin compile failed
+        if: ${{ steps.compile.outputs.exit_code != '0' }}
+        shell: bash
+        run: |
+          echo "::error::Kotlin compile failed (exit_code=${{ steps.compile.outputs.exit_code }}). See artifact kotlin-compile-log."
+          exit 1
+
+      # Nếu compile OK mới build APK
+      - name: Assemble Debug APK
         shell: bash
         run: |
           set -e
           set -o pipefail
-          echo "== BUILD :test:assembleDebug ==" | tee -a "${LOG_FILE}"
           "${{ steps.gradle.outputs.cmd }}" -p "${GRADLE_ROOT}" :test:assembleDebug \
             --no-daemon --console=plain --stacktrace --info 2>&1 | tee -a "${LOG_FILE}"
 
@@ -101,40 +151,4 @@ jobs:
         with:
           name: debug-apk
           path: duix-android/dh_aigc_android/test/build/outputs/apk/debug/*.apk
-          if-no-files-found: error
-
-      - name: Debug on failure (print Kotlin errors + context)
-        if: failure()
-        shell: bash
-        run: |
-          RED=$'\033[1;31m'; NC=$'\033[0m'
-
-          echo "::group::Kotlin error lines (red)"
-          grep -nE '(^e: |Unresolved reference|: error:|was compiled with an incompatible version of Kotlin|Kotlin metadata|Compilation failed|Compilation error)' \
-            "${LOG_FILE}" \
-            | head -n 400 \
-            | sed -e "s/^/${RED}/" -e "s/$/${NC}/" \
-            || true
-          echo "::endgroup::"
-
-          echo "::group::Context around :test:compileDebugKotlin FAILED"
-          LINE=$(grep -nE '> Task :test:compileDebugKotlin FAILED|:test:compileDebugKotlin FAILED' "${LOG_FILE}" | head -n 1 | cut -d: -f1 || true)
-          if [ -n "$LINE" ]; then
-            START=$((LINE-250)); [ $START -lt 1 ] && START=1
-            END=$((LINE+250))
-            sed -n "${START},${END}p" "${LOG_FILE}" | sed -e "s/^/${RED}/" -e "s/$/${NC}/" || true
-          else
-            echo "Cannot find ':test:compileDebugKotlin FAILED' line in log."
-            tail -n 400 "${LOG_FILE}" || true
-          fi
-          echo "::endgroup::"
-
-          echo "::error::Build failed. Download artifact gradle-build-log for full log."
-
-      - name: Upload Gradle build log (always)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: gradle-build-log
-          path: ${{ github.workspace }}/gradle-build.log
           if-no-files-found: error
