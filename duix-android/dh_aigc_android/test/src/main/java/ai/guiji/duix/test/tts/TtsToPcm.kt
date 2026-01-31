@@ -15,11 +15,10 @@ class TtsToPcm(ctx: Context) {
     private val appCtx = ctx.applicationContext
     private val ready = CompletableDeferred<Unit>()
 
-    // Nullable để tránh lỗi "must be initialized"
+    // Nullable để tránh lỗi "Variable 'tts' must be initialized"
     private var tts: TextToSpeech? = null
 
     init {
-        // Dùng biến local để callback không chạm vào property chưa gán
         var engine: TextToSpeech? = null
         engine = TextToSpeech(appCtx) { status ->
             if (status == TextToSpeech.SUCCESS) {
@@ -32,10 +31,6 @@ class TtsToPcm(ctx: Context) {
         tts = engine
     }
 
-    /**
-     * Trả về PCM 16kHz, mono, 16-bit (little endian).
-     * Có pad tối thiểu 1s (32000 bytes) để trigger mouth của DUIX.
-     */
     suspend fun synthesizePcm16k(text: String): ByteArray {
         ready.await()
         val engine = tts ?: error("TTS is null")
@@ -46,12 +41,8 @@ class TtsToPcm(ctx: Context) {
 
         engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(utteranceId: String) {}
-            override fun onDone(utteranceId: String) {
-                if (utteranceId == uttId) done.complete(Unit)
-            }
-            override fun onError(utteranceId: String) {
-                if (utteranceId == uttId) done.completeExceptionally(RuntimeException("TTS error"))
-            }
+            override fun onDone(utteranceId: String) { if (utteranceId == uttId) done.complete(Unit) }
+            override fun onError(utteranceId: String) { if (utteranceId == uttId) done.completeExceptionally(RuntimeException("TTS error")) }
         })
 
         @Suppress("DEPRECATION")
@@ -63,9 +54,7 @@ class TtsToPcm(ctx: Context) {
         var pcm = WavUtil.toPcm16kMono16(wav)
 
         // DUIX yêu cầu >= 1s (32000 bytes)
-        if (pcm.size < 32000) {
-            pcm = pcm + ByteArray(32000 - pcm.size)
-        }
+        if (pcm.size < 32000) pcm = pcm + ByteArray(32000 - pcm.size)
         return pcm
     }
 
@@ -88,19 +77,15 @@ class TtsToPcm(ctx: Context) {
             require(info.bitsPerSample == 16) { "WAV bitsPerSample=${info.bitsPerSample} (need 16)" }
 
             var pcm = info.pcmData
-
-            // stereo -> mono
             pcm = when (info.channels) {
                 1 -> pcm
                 2 -> stereoToMono16(pcm)
                 else -> error("WAV channels=${info.channels} (need 1 or 2)")
             }
 
-            // resample về 16k nếu cần
             if (info.sampleRate != 16000) {
                 pcm = resample16(pcm, info.sampleRate, 16000)
             }
-
             return pcm
         }
 
@@ -129,7 +114,6 @@ class TtsToPcm(ctx: Context) {
                     dataSize = size
                     break
                 }
-
                 offset = dataStart + size
             }
 
@@ -156,7 +140,6 @@ class TtsToPcm(ctx: Context) {
             return out
         }
 
-        // Linear resample 16-bit mono
         private fun resample16(pcm16: ByteArray, fromRate: Int, toRate: Int): ByteArray {
             val inSamples = pcm16.size / 2
             val outSamples = (inSamples.toLong() * toRate / fromRate).toInt()
