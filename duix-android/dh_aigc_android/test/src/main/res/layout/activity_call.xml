@@ -25,7 +25,7 @@
         android:padding="6dp"
         app:layout_constraintTop_toTopOf="parent"
         android:layout_width="match_parent"
-        android:layout_height="200dp"/>
+        android:layout_height="200dp" />
 
 
     <androidx.appcompat.widget.SwitchCompat
@@ -36,7 +36,7 @@
         app:layout_constraintTop_toTopOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         android:layout_width="wrap_content"
-        android:layout_height="wrap_content"/>
+        android:layout_height="wrap_content" />
 
     <TextView
         android:id="@+id/tvMotionTips"
@@ -46,7 +46,7 @@
         app:layout_constraintTop_toTopOf="parent"
         android:text="@string/support_actions"
         android:layout_width="wrap_content"
-        android:layout_height="wrap_content"/>
+        android:layout_height="wrap_content" />
 
     <androidx.recyclerview.widget.RecyclerView
         android:id="@+id/rvMotion"
@@ -56,7 +56,7 @@
         app:layoutManager="androidx.recyclerview.widget.LinearLayoutManager"
         android:orientation="vertical"
         android:layout_width="wrap_content"
-        android:layout_height="wrap_content"/>
+        android:layout_height="wrap_content" />
 
     <Button
         android:id="@+id/btnRandomMotion"
@@ -69,7 +69,38 @@
         android:background="@drawable/shape_common_btn"
         android:layout_margin="6dp"
         android:layout_width="wrap_content"
-        android:layout_height="wrap_content"/>
+        android:layout_height="wrap_content" />
+
+    <!-- ========= STEP 1: CHAT PANEL (NEW) ========= -->
+    <LinearLayout
+        android:id="@+id/chatPanel"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:padding="10dp"
+        android:background="#66000000"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintBottom_toBottomOf="parent">
+
+        <EditText
+            android:id="@+id/etChat"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:hint="Nhập câu hỏi..."
+            android:imeOptions="actionSend"
+            android:inputType="text"
+            android:maxLines="2"
+            android:textColor="@android:color/white"
+            android:textColorHint="#CCFFFFFF" />
+
+        <Button
+            android:id="@+id/btnSendChat"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Gửi" />
+    </LinearLayout>
 
     <TextView
         android:id="@+id/tvAITips"
@@ -80,11 +111,10 @@
         android:shadowRadius="5"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintBottom_toTopOf="@+id/chatPanel"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
-        android:layout_marginBottom="12dp"
-        />
+        android:layout_marginBottom="8dp" />
 
     <Button
         android:id="@+id/btnRecord"
@@ -97,7 +127,7 @@
         android:background="@drawable/shape_common_btn"
         android:layout_margin="6dp"
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"/>
+        android:layout_height="wrap_content" />
 
     <Button
         android:id="@+id/btnPlayPCM"
@@ -109,7 +139,7 @@
         android:textColor="@color/white"
         android:enabled="false"
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"/>
+        android:layout_height="wrap_content" />
 
     <Button
         android:id="@+id/btnPlayWAV"
@@ -121,7 +151,7 @@
         android:textColor="@color/white"
         android:enabled="false"
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"/>
+        android:layout_height="wrap_content" />
 
     <Button
         android:id="@+id/btnStopPlay"
@@ -135,5 +165,6 @@
         android:textColor="@color/white"
         android:enabled="false"
         android:layout_width="wrap_content"
-        android:layout_height="wrap_content"/>
+        android:layout_height="wrap_content" />
+
 </androidx.constraintlayout.widget.ConstraintLayout>
