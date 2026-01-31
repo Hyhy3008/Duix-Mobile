@@ -1,4 +1,4 @@
-name: Build Debug APK (Split steps)
+name: Build Debug APK (Fail Fast)
 
 on:
   push:
@@ -11,12 +11,10 @@ jobs:
 
     env:
       GRADLE_ROOT: duix-android/dh_aigc_android
-      SDK_LOG: ${{ github.workspace }}/gradle-sdk.log
-      TEST_LOG: ${{ github.workspace }}/gradle-test.log
+      LOG_FILE: ${{ github.workspace }}/gradle-build.log
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Setup JDK 17
         uses: actions/setup-java@v4
@@ -30,19 +28,12 @@ jobs:
       - name: Setup Gradle cache
         uses: gradle/actions/setup-gradle@v3
 
-      # ===== STEP 0: Sanity check Gradle root =====
-      - name: Sanity check Gradle root
+      - name: Init log file
         shell: bash
         run: |
-          set -e
-          echo "== Gradle root listing =="
-          ls -la "${GRADLE_ROOT}"
-          echo "== settings.gradle* =="
-          ls -la "${GRADLE_ROOT}/settings.gradle"* 2>/dev/null || true
-          echo "== wrapper dir =="
-          ls -la "${GRADLE_ROOT}/gradle/wrapper" || true
+          : > "${LOG_FILE}"
+          echo "LOG_FILE=${LOG_FILE}"
 
-      # ===== STEP 1: Install SDK packages + accept licenses (no broken pipe fail) =====
       - name: Install Android packages + accept licenses
         shell: bash
         run: |
@@ -52,14 +43,13 @@ jobs:
             "platforms;android-34" \
             "build-tools;34.0.0" \
             "cmake;3.18.1" \
-            "ndk;25.2.9519653"
+            "ndk;25.2.9519653" 2>&1 | tee -a "${LOG_FILE}"
 
           # avoid "yes: Broken pipe" failing job
           set +o pipefail
           yes | sdkmanager --licenses >/dev/null
           set -o pipefail
 
-      # ===== STEP 2: Bootstrap Gradle (if no gradlew) =====
       - name: Bootstrap Gradle command
         id: gradle
         shell: bash
@@ -68,141 +58,56 @@ jobs:
           if [ -f "${GRADLE_ROOT}/gradlew" ]; then
             chmod +x "${GRADLE_ROOT}/gradlew"
             echo "cmd=${GRADLE_ROOT}/gradlew" >> "$GITHUB_OUTPUT"
-            echo "Using repo gradlew: ${GRADLE_ROOT}/gradlew"
             exit 0
           fi
 
           PROP="${GRADLE_ROOT}/gradle/wrapper/gradle-wrapper.properties"
-          if [ ! -f "$PROP" ]; then
-            echo "::error::No gradlew and no $PROP"
-            exit 1
-          fi
-
           URL=$(grep -E '^distributionUrl=' "$PROP" | cut -d= -f2- | sed 's/\\:/:/g')
-          if [ -z "$URL" ]; then
-            echo "::error::Cannot read distributionUrl in $PROP"
-            exit 1
-          fi
-
-          echo "Bootstrap Gradle from: $URL"
           mkdir -p /tmp/gradle-dist
           curl -L "$URL" -o /tmp/gradle.zip
           unzip -q /tmp/gradle.zip -d /tmp/gradle-dist
           GRADLE_BIN=$(find /tmp/gradle-dist -maxdepth 3 -type f -path "*/bin/gradle" | head -n 1)
-
-          if [ -z "$GRADLE_BIN" ]; then
-            echo "::error::Cannot find gradle binary after unzip"
-            exit 1
-          fi
-
           chmod +x "$GRADLE_BIN"
           echo "cmd=$GRADLE_BIN" >> "$GITHUB_OUTPUT"
-          echo "Using bootstrapped gradle: $GRADLE_BIN"
 
-      # ===== STEP 3: List projects (to confirm modules) =====
-      - name: List Gradle projects
+      - name: Build :duix-sdk Debug (fail fast)
         shell: bash
         run: |
           set -e
-          "${{ steps.gradle.outputs.cmd }}" -p "${GRADLE_ROOT}" -q projects || true
+          set -o pipefail
+          echo "== BUILD :duix-sdk:assembleDebug ==" | tee -a "${LOG_FILE}"
+          "${{ steps.gradle.outputs.cmd }}" -p "${GRADLE_ROOT}" :duix-sdk:assembleDebug --stacktrace --info 2>&1 | tee -a "${LOG_FILE}"
 
-      # ===== STEP 4: Build duix-sdk (separate log) =====
-      - name: Build :duix-sdk (Debug) - capture log
-        id: build_sdk
-        continue-on-error: true
+      - name: Build :test Debug APK (fail fast)
         shell: bash
         run: |
-          : > "${SDK_LOG}"
-          set +e
-          echo "== BUILD :duix-sdk:assembleDebug ==" | tee -a "${SDK_LOG}"
-          "${{ steps.gradle.outputs.cmd }}" -p "${GRADLE_ROOT}" :duix-sdk:assembleDebug --stacktrace --info 2>&1 | tee -a "${SDK_LOG}"
-          EXIT=${PIPESTATUS[0]}
-          echo "exit_code=$EXIT" >> "$GITHUB_OUTPUT"
-          echo "SDK exit_code=$EXIT" | tee -a "${SDK_LOG}"
-          exit 0
+          set -e
+          set -o pipefail
+          echo "== BUILD :test:assembleDebug ==" | tee -a "${LOG_FILE}"
+          "${{ steps.gradle.outputs.cmd }}" -p "${GRADLE_ROOT}" :test:assembleDebug --stacktrace --info 2>&1 | tee -a "${LOG_FILE}"
 
-      - name: Extract errors for :duix-sdk (red)
-        if: always()
-        shell: bash
-        run: |
-          echo "SDK exit_code = ${{ steps.build_sdk.outputs.exit_code }}"
-          echo "::group::SDK errors (red)"
-          RED=$'\033[1;31m'; NC=$'\033[0m'
-          grep -nE '(^e: |: error:|> Task .* FAILED|FAILURE:|Caused by:|Unresolved reference|incompatible version of Kotlin|Kotlin metadata)' \
-            "${SDK_LOG}" | head -n 300 | sed -e "s/^/${RED}/" -e "s/$/${NC}/" || true
-          echo "::endgroup::"
-
-          echo "::group::SDK context around first FAILED task"
-          LINE=$(grep -nE '> Task .* FAILED' "${SDK_LOG}" | head -n 1 | cut -d: -f1)
-          if [ -n "$LINE" ]; then
-            START=$((LINE-120)); if [ $START -lt 1 ]; then START=1; fi
-            END=$((LINE+120))
-            sed -n "${START},${END}p" "${SDK_LOG}" || true
-          else
-            echo "No FAILED task line found in SDK log."
-          fi
-          echo "::endgroup::"
-
-      # ===== STEP 5: Build test app (separate log) =====
-      - name: Build :test (Debug) - capture log
-        id: build_test
-        continue-on-error: true
-        shell: bash
-        run: |
-          : > "${TEST_LOG}"
-          set +e
-          echo "== BUILD :test:assembleDebug ==" | tee -a "${TEST_LOG}"
-          "${{ steps.gradle.outputs.cmd }}" -p "${GRADLE_ROOT}" :test:assembleDebug --stacktrace --info 2>&1 | tee -a "${TEST_LOG}"
-          EXIT=${PIPESTATUS[0]}
-          echo "exit_code=$EXIT" >> "$GITHUB_OUTPUT"
-          echo "TEST exit_code=$EXIT" | tee -a "${TEST_LOG}"
-          exit 0
-
-      - name: Extract errors for :test (red)
-        if: always()
-        shell: bash
-        run: |
-          echo "TEST exit_code = ${{ steps.build_test.outputs.exit_code }}"
-          echo "::group::TEST errors (red)"
-          RED=$'\033[1;31m'; NC=$'\033[0m'
-          grep -nE '(^e: |: error:|> Task .* FAILED|FAILURE:|Caused by:|Unresolved reference|incompatible version of Kotlin|Kotlin metadata)' \
-            "${TEST_LOG}" | head -n 300 | sed -e "s/^/${RED}/" -e "s/$/${NC}/" || true
-          echo "::endgroup::"
-
-          echo "::group::TEST context around first FAILED task"
-          LINE=$(grep -nE '> Task .* FAILED' "${TEST_LOG}" | head -n 1 | cut -d: -f1)
-          if [ -n "$LINE" ]; then
-            START=$((LINE-160)); if [ $START -lt 1 ]; then START=1; fi
-            END=$((LINE+160))
-            sed -n "${START},${END}p" "${TEST_LOG}" || true
-          else
-            echo "No FAILED task line found in TEST log."
-          fi
-          echo "::endgroup::"
-
-      # ===== STEP 6: Upload artifacts (logs always, apk if success) =====
-      - name: Upload logs (always)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-logs
-          path: |
-            ${{ github.workspace }}/gradle-sdk.log
-            ${{ github.workspace }}/gradle-test.log
-          if-no-files-found: error
-
-      - name: Upload debug APK (if test build success)
-        if: ${{ steps.build_test.outputs.exit_code == '0' }}
+      - name: Upload Debug APK
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: debug-apk
           path: duix-android/dh_aigc_android/test/build/outputs/apk/debug/*.apk
           if-no-files-found: error
 
-      # ===== STEP 7: Fail job at the end (so you always see extracted errors) =====
-      - name: Fail if any module failed
-        if: ${{ steps.build_sdk.outputs.exit_code != '0' || steps.build_test.outputs.exit_code != '0' }}
+      - name: Debug on failure (Kotlin errors in red)
+        if: failure()
         shell: bash
         run: |
-          echo "::error::Build failed. duix-sdk exit=${{ steps.build_sdk.outputs.exit_code }}, test exit=${{ steps.build_test.outputs.exit_code }}"
-          exit 1
+          echo "::group::Kotlin compile errors (red)"
+          RED=$'\033[1;31m'; NC=$'\033[0m'
+          grep -nE '(^e: |Unresolved reference|: error:|> Task .* FAILED|FAILURE:|Caused by:|incompatible version of Kotlin|Kotlin metadata)' \
+            "${LOG_FILE}" | head -n 300 | sed -e "s/^/${RED}/" -e "s/$/${NC}/" || true
+          echo "::endgroup::"
+
+      - name: Upload Gradle build log (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gradle-build-log
+          path: ${{ github.workspace }}/gradle-build.log
+          if-no-files-found: error
