@@ -1,4 +1,4 @@
-name: Build Debug APK (Web-safe)
+name: Build APK (auto-detect task)
 
 on:
   push:
@@ -12,6 +12,7 @@ jobs:
     env:
       GRADLE_ROOT: duix-android/dh_aigc_android
       LOG_FILE: ${{ github.workspace }}/gradle-build.log
+      TASKS_FILE: ${{ github.workspace }}/test-tasks.txt
 
     steps:
       - uses: actions/checkout@v4
@@ -25,7 +26,6 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      # Tắt cache để khỏi nhiễu lỗi cache 400
       - name: Setup Gradle (cache disabled)
         uses: gradle/actions/setup-gradle@v3
         with:
@@ -35,7 +35,7 @@ jobs:
         shell: bash
         run: |
           : > "${LOG_FILE}"
-          echo "Gradle root = ${GRADLE_ROOT}" | tee -a "${LOG_FILE}"
+          echo "GRADLE_ROOT=${GRADLE_ROOT}" | tee -a "${LOG_FILE}"
           ls -la "${GRADLE_ROOT}" | tee -a "${LOG_FILE}"
 
       - name: Install Android packages + accept licenses
@@ -65,8 +65,12 @@ jobs:
           fi
 
           PROP="${GRADLE_ROOT}/gradle/wrapper/gradle-wrapper.properties"
-          URL=$(grep -E '^distributionUrl=' "$PROP" | cut -d= -f2- | sed 's/\\:/:/g')
+          if [ ! -f "$PROP" ]; then
+            echo "::error::No gradlew and no $PROP"
+            exit 1
+          fi
 
+          URL=$(grep -E '^distributionUrl=' "$PROP" | cut -d= -f2- | sed 's/\\:/:/g')
           mkdir -p /tmp/gradle-dist
           curl -L "$URL" -o /tmp/gradle.zip
           unzip -q /tmp/gradle.zip -d /tmp/gradle-dist
@@ -74,7 +78,42 @@ jobs:
           chmod +x "$GRADLE_BIN"
           echo "cmd=$GRADLE_BIN" >> "$GITHUB_OUTPUT"
 
-      - name: Build :test:assembleDebug (capture log)
+      - name: Print settings.gradle + test/build.gradle header (debug)
+        shell: bash
+        run: |
+          echo "::group::settings.gradle"
+          sed -n '1,120p' "${GRADLE_ROOT}/settings.gradle" || true
+          echo "::endgroup::"
+
+          echo "::group::test/build.gradle (first 60 lines)"
+          sed -n '1,60p' "${GRADLE_ROOT}/test/build.gradle" || true
+          echo "::endgroup::"
+
+      - name: List :test tasks and choose build task
+        id: choose
+        shell: bash
+        run: |
+          set +e
+          : > "${TASKS_FILE}"
+
+          # Lấy danh sách task của module :test
+          "${{ steps.gradle.outputs.cmd }}" -p "${GRADLE_ROOT}" :test:tasks --all --console=plain > "${TASKS_FILE}" 2>&1
+          echo "::group:::test tasks (tail)"
+          tail -n 200 "${TASKS_FILE}" || true
+          echo "::endgroup::"
+
+          # Chọn task build phù hợp
+          TASK=":test:assemble"
+          if grep -qE '^assembleDebug\b' "${TASKS_FILE}"; then
+            TASK=":test:assembleDebug"
+          elif grep -qE '^assemble\b' "${TASKS_FILE}"; then
+            TASK=":test:assemble"
+          fi
+
+          echo "Selected TASK=$TASK"
+          echo "task=$TASK" >> "$GITHUB_OUTPUT"
+
+      - name: Build selected task (capture log)
         id: build
         continue-on-error: true
         shell: bash
@@ -82,39 +121,42 @@ jobs:
           : > "${LOG_FILE}"
           set +e
           set -o pipefail
-          echo "== BUILD :test:assembleDebug ==" | tee -a "${LOG_FILE}"
-          "${{ steps.gradle.outputs.cmd }}" -p "${GRADLE_ROOT}" :test:assembleDebug \
+          echo "== BUILD ${{ steps.choose.outputs.task }} ==" | tee -a "${LOG_FILE}"
+          "${{ steps.gradle.outputs.cmd }}" -p "${GRADLE_ROOT}" ${{ steps.choose.outputs.task }} \
             --no-daemon --console=plain --stacktrace --info 2>&1 | tee -a "${LOG_FILE}"
           EXIT=${PIPESTATUS[0]}
           echo "exit_code=$EXIT" >> "$GITHUB_OUTPUT"
           echo "exit_code=$EXIT" | tee -a "${LOG_FILE}"
           exit 0
 
-      - name: Print Kotlin errors (if failed)
+      - name: Print Kotlin/Java errors (if failed)
         if: ${{ steps.build.outputs.exit_code != '0' }}
         shell: bash
         run: |
-          echo "::group::Kotlin/Java errors (best effort)"
+          echo "::group::Errors (best effort)"
           grep -nE '(^e: |\.kt:[0-9]+:[0-9]+| error:|Unresolved reference|Type mismatch|incompatible version of Kotlin|Kotlin metadata|> Task .* FAILED|FAILURE:|Caused by:)' \
             "${LOG_FILE}" | head -n 400 || true
           echo "::endgroup::"
-          echo "::error::Build failed (see artifact gradle-build-log)."
+          echo "::error::Build failed"
 
-      - name: Upload APK (if success)
-        if: ${{ steps.build.outputs.exit_code == '0' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: debug-apk
-          path: duix-android/dh_aigc_android/test/build/outputs/apk/debug/*.apk
-          if-no-files-found: error
-
-      - name: Upload build log (always)
+      - name: Upload logs (always)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: gradle-build-log
-          path: ${{ github.workspace }}/gradle-build.log
+          name: build-logs
+          path: |
+            ${{ github.workspace }}/gradle-build.log
+            ${{ github.workspace }}/test-tasks.txt
           if-no-files-found: error
+
+      - name: Upload APK (try find any debug apk)
+        if: ${{ steps.build.outputs.exit_code == '0' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: apks
+          path: |
+            duix-android/dh_aigc_android/**/build/outputs/apk/**/*.apk
+          if-no-files-found: warn
 
       - name: Fail job if build failed
         if: ${{ steps.build.outputs.exit_code != '0' }}
