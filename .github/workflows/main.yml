@@ -1,0 +1,76 @@
+name: Build Debug APK
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-debug:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Setup Gradle cache
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Install SDK packages
+        run: |
+          set -e
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-34" \
+            "build-tools;34.0.0" \
+            "cmake;3.18.1" \
+            "ndk;25.2.9519653"
+          yes | sdkmanager --licenses
+
+      - name: Build Debug APK (capture log)
+        run: |
+          set -o pipefail
+          chmod +x duix-android/dh_aigc_android/gradlew
+          duix-android/dh_aigc_android/gradlew -p duix-android/dh_aigc_android \
+            :test:assembleDebug --stacktrace --info 2>&1 | tee gradle-build.log
+
+      - name: Upload Debug APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-apk
+          path: duix-android/dh_aigc_android/test/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+
+      - name: Debug on failure (highlight errors)
+        if: failure()
+        run: |
+          echo "::group::Last 300 lines"
+          tail -n 300 gradle-build.log || true
+          echo "::endgroup::"
+
+          echo "::group::Error lines (red)"
+          export GREP_COLORS='ms=01;31'
+          grep --color=always -nE \
+            '(^\s*FAILURE:|^\s*> Task .* FAILED|: error:|Exception|Caused by:|Manifest merger failed|INSTALL_FAILED|No matching abis|CMake .* was not found)' \
+            gradle-build.log | head -n 250 || true
+          echo "::endgroup::"
+
+          echo "::error::Build failed. See gradle-build.log artifact."
+
+      - name: Upload build log (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gradle-build-log
+          path: gradle-build.log
+          if-no-files-found: warn
