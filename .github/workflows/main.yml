@@ -9,21 +9,21 @@ jobs:
   build-debug:
     runs-on: ubuntu-latest
 
-    defaults:
-      run:
-        shell: bash
-        working-directory: duix-android/dh_aigc_android
+    env:
+      GRADLE_ROOT: duix-android/dh_aigc_android
+      LOG_FILE: ${{ github.workspace }}/gradle-build.log
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Show Gradle root files (sanity)
+      - name: Init log file (always create)
+        shell: bash
         run: |
-          echo "PWD=$(pwd)"
-          ls -la
-          echo "----"
-          find . -maxdepth 2 -name "settings.gradle*" -o -name "gradlew" -o -name "build.gradle" | sed 's|^\./||g'
+          : > "${LOG_FILE}"
+          echo "Log file: ${LOG_FILE}"
+          echo "Repo root: ${GITHUB_WORKSPACE}" | tee -a "${LOG_FILE}"
+          ls -la | tee -a "${LOG_FILE}"
 
       - name: Setup JDK 17
         uses: actions/setup-java@v4
@@ -34,30 +34,57 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
+      # Cache có thể warning "Our services aren't available right now" (không sao)
       - name: Setup Gradle cache
         uses: gradle/actions/setup-gradle@v3
 
-      - name: Install Android packages (NDK/CMake)
+      - name: Sanity check Gradle root
+        shell: bash
         run: |
           set -e
+          echo "== Gradle root files ==" | tee -a "${LOG_FILE}"
+          ls -la "${GRADLE_ROOT}" | tee -a "${LOG_FILE}"
+          if [ ! -f "${GRADLE_ROOT}/gradlew" ]; then
+            echo "::error::gradlew not found at ${GRADLE_ROOT}/gradlew"
+            exit 1
+          fi
+          if [ ! -f "${GRADLE_ROOT}/settings.gradle" ] && [ ! -f "${GRADLE_ROOT}/settings.gradle.kts" ]; then
+            echo "::warning::settings.gradle not found in ${GRADLE_ROOT} (still may work, but unusual)"
+          fi
+
+      - name: Install Android packages (NDK/CMake) + accept licenses
+        shell: bash
+        run: |
+          set -e
+          echo "== sdkmanager install ==" | tee -a "${LOG_FILE}"
           sdkmanager --install \
             "platform-tools" \
             "platforms;android-34" \
             "build-tools;34.0.0" \
             "cmake;3.18.1" \
-            "ndk;25.2.9519653"
-          yes | sdkmanager --licenses
+            "ndk;25.2.9519653" 2>&1 | tee -a "${LOG_FILE}"
 
-      - name: List Gradle modules (debug)
+          echo "== accept licenses ==" | tee -a "${LOG_FILE}"
+          # Tránh lỗi "yes: Broken pipe" làm fail job khi shell có pipefail
+          set +o pipefail
+          yes | sdkmanager --licenses >/dev/null
+          set -o pipefail
+
+      - name: List Gradle projects (debug)
+        shell: bash
         run: |
-          chmod +x ./gradlew
-          ./gradlew -q projects || true
+          set -e
+          chmod +x "${GRADLE_ROOT}/gradlew"
+          echo "== gradle projects ==" | tee -a "${LOG_FILE}"
+          "${GRADLE_ROOT}/gradlew" -p "${GRADLE_ROOT}" -q projects 2>&1 | tee -a "${LOG_FILE}" || true
 
       - name: Build :test Debug APK (capture log)
+        shell: bash
         run: |
           set -o pipefail
-          chmod +x ./gradlew
-          ./gradlew :test:assembleDebug --stacktrace --info 2>&1 | tee gradle-build.log
+          chmod +x "${GRADLE_ROOT}/gradlew"
+          echo "== build :test:assembleDebug ==" | tee -a "${LOG_FILE}"
+          "${GRADLE_ROOT}/gradlew" -p "${GRADLE_ROOT}" :test:assembleDebug --stacktrace --info 2>&1 | tee -a "${LOG_FILE}"
 
       - name: Upload Debug APK
         if: success()
@@ -69,24 +96,29 @@ jobs:
 
       - name: Debug on failure (print & color error lines)
         if: failure()
+        shell: bash
         run: |
           echo "::group::Last 300 lines of Gradle log"
-          tail -n 300 gradle-build.log || true
+          tail -n 300 "${LOG_FILE}" || true
           echo "::endgroup::"
 
           echo "::group::Highlighted error lines (red)"
-          export GREP_COLORS='ms=01;31'
-          grep --color=always -nE \
-            '(^\s*FAILURE:|^\s*> Task .* FAILED|: error:|Exception|Caused by:|Manifest merger failed|INSTALL_FAILED|No matching abis|CMake .* was not found|Execution failed for task)' \
-            gradle-build.log | head -n 300 || true
+          # In đỏ các dòng match lỗi
+          RED=$'\033[1;31m'
+          NC=$'\033[0m'
+          grep -nE '(^\s*FAILURE:|^\s*> Task .* FAILED|: error:|Exception|Caused by:|Manifest merger failed|INSTALL_FAILED|No matching abis|CMake .* was not found|Execution failed for task)' \
+            "${LOG_FILE}" \
+            | head -n 300 \
+            | sed -e "s/^/${RED}/" -e "s/$/${NC}/" \
+            || true
           echo "::endgroup::"
 
-          echo "::error::Build failed. Download artifact gradle-build-log to see full log."
+          echo "::error::Build failed. Download artifact 'gradle-build-log' to see full log."
 
       - name: Upload Gradle build log (always)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: gradle-build-log
-          path: duix-android/dh_aigc_android/gradle-build.log
-          if-no-files-found: warn
+          path: ${{ github.workspace }}/gradle-build.log
+          if-no-files-found: error
